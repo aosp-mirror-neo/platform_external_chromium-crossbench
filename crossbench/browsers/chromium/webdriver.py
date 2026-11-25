@@ -213,11 +213,34 @@ class ChromiumWebDriverAndroid(ChromiumBasedWebDriver):
         self._setup_binary_permissions()
       self._has_started_in_session = True
     self._backup_chrome_flags()
+    self._wait_for_app_zygote_stop()
     driver = self._start_chromedriver(
       session, driver_path, startup_urls=startup_urls
     )
     self._dismiss_any_os_permission_prompts()
     return driver
+
+  # Android's ActivityManagerService delays killing app zygote by 5s
+  # (KILL_APP_ZYGOTE_DELAY_MS) after the last isolated renderer process exits.
+  # Killing zygote from a previous instance can race against spawning a new
+  # renderer in the next iteration, leading to silent failures.
+  # Wait until the previous zygote is stopped before starting a new browser
+  # instance.
+  def _wait_for_app_zygote_stop(self) -> None:
+    zygote_processes = {
+      f"{self.android_package}_zygote",
+      f"{self.android_package}_zygote_native",
+    }
+    try:
+      for _ in wait.wait_with_backoff(10):
+        running = zygote_processes.intersection(
+          proc["name"] for proc in self.platform.processes(["name"])
+        )
+        if not running:
+          return
+        logging.debug("Waiting for %s to stop...", running)
+    except TimeoutError:
+      logging.warning("Timed out waiting for zygote to stop.")
 
   # Some Android OEMs display permission prompts that we cannot turn off via adb
   # (e.g. because the permissions can't be granted in advance) or device
