@@ -174,7 +174,8 @@ describe('Google Identity Services (GIS) OAuth 2.0 Auth', () => {
        });
 
     it('dynamically appends script element and resolves on load', async () => {
-      const appendSpy = vi.spyOn(document.head, 'appendChild');
+      const appendSpy = vi.spyOn(document.head, 'appendChild')
+                            .mockImplementation((node) => node);
 
       const testUrl = 'https://accounts.google.com/gsi/client-test';
       const promise = loadGisScript(testUrl);

@@ -68,7 +68,10 @@ export default defineConfig(({command, mode}) => {
     },
     server: {
       fs: {
-        allow: [searchForWorkspaceRoot(process.cwd())],
+        allow: [
+          searchForWorkspaceRoot(process.cwd()),
+          resolve(import.meta.dirname, '../..'),
+        ],
         deny: ['.env', '.env.*', '**/.git/**'],
       },
       proxy: {
@@ -83,9 +86,9 @@ export default defineConfig(({command, mode}) => {
       target: 'es2022',
       rollupOptions: {
         input: {
-          main: resolve(__dirname, 'index.html'),
-          auth: resolve(__dirname, 'auth.html'),
-          privacy: resolve(__dirname, 'privacy.html'),
+          main: resolve(import.meta.dirname, 'index.html'),
+          auth: resolve(import.meta.dirname, 'auth.html'),
+          privacy: resolve(import.meta.dirname, 'privacy.html'),
         },
       },
     },
