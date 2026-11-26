@@ -92,7 +92,11 @@ if TYPE_CHECKING:
     VirtualDeviceType,
   )
   from crossbench.cli.config.secrets import GoogleUsernamePassword
-  from crossbench.device_config import DeviceConfigKeyPath, DeviceConfigMap
+  from crossbench.device_config import (
+    DeviceConfigKeyPath,
+    DeviceConfigMap,
+    DeviceConfigValue,
+  )
   from crossbench.plt.base import Platform
   from crossbench.plt.details import CpuDetails, PythonDetails
   from crossbench.plt.display_info import DisplayInfo
@@ -992,11 +996,57 @@ class AndroidVersion(PosixVersion):
 _SETTINGS_NAMESPACES: Final[tuple[str, ...]] = ("global", "secure", "system")
 
 
+@dataclasses.dataclass(frozen=True)
+class _ShellSetting:
+  """A device config value read and written via an adb shell command.
+
+  Ad-hoc shell tools (such as 'cmd <service>' or 'wm') share no uniform
+  protocol to list or write values, unlike 'settings', so each supported
+  setting declares its own commands.
+
+  Attributes:
+    get_args: The command that prints the current value.
+    set_args: The command prefix to write a value; whitespace-separated tokens
+      of the value are appended as arguments.
+    pattern: Matches the output of get_args in full. Its "value" group
+      captures the value, in the form that set_args accepts.
+  """
+
+  get_args: tuple[str, ...]
+  set_args: tuple[str, ...]
+  pattern: re.Pattern[str]
+
+
+# Ad-hoc adb shell settings keyed by their device_config path under "android"
+# (e.g., ("cmd", "uimode", "night") or ("wm", "user-rotation")).
+_SHELL_SETTINGS: Final[Mapping[DeviceConfigKeyPath, _ShellSetting]] = (
+  immutabledict()
+)
+
+
 class _AndroidDeviceConfigReader:
   """Reads and parses configuration data from an Android device via ADB."""
 
   def __init__(self, adb: Adb) -> None:
     self._adb: Final[Adb] = adb
+
+  def shell_settings(self) -> dict[str, DeviceConfigValue]:
+    """Reads registered shell settings into a nested dictionary."""
+    result: dict[str, DeviceConfigValue] = {}
+    for key_path, setting in _SHELL_SETTINGS.items():
+      assert key_path, "Shell setting key_path must not be empty."
+      value = self._read_shell_setting(key_path, setting)
+      if value is None:
+        continue
+      target: dict[str, DeviceConfigValue] = result
+      for key in key_path[:-1]:
+        child = target.setdefault(key, {})
+        assert isinstance(child, dict), (
+          f"Conflicting shell setting paths around {'.'.join(key_path)!r}."
+        )
+        target = child
+      target[key_path[-1]] = value
+    return result
 
   def device_config(self) -> dict[str, str]:
     """Retrieves namespaced flags from 'cmd device_config list'.
@@ -1026,6 +1076,28 @@ class _AndroidDeviceConfigReader:
       output = self._adb.shell_stdout("settings", "list", namespace)
       settings_dict[namespace] = self._parse_key_values(output)
     return settings_dict
+
+  def _read_shell_setting(
+    self, key_path: DeviceConfigKeyPath, setting: _ShellSetting
+  ) -> str | None:
+    """Reads one shell setting, returning None with a warning on failure."""
+    name = ".".join(key_path)
+    try:
+      output = self._adb.shell_stdout(*setting.get_args).strip()
+    except SubprocessError as e:
+      logging.warning(
+        "Failed to read %s (%s): %s", name, shlex.join(setting.get_args), e
+      )
+      return None
+    if match := setting.pattern.fullmatch(output):
+      return match.group("value")
+    logging.warning(
+      "Unexpected output for %s (%s): %r",
+      name,
+      shlex.join(setting.get_args),
+      output,
+    )
+    return None
 
   @classmethod
   def _parse_key_values(cls, output: str) -> dict[str, str]:
@@ -1825,6 +1897,7 @@ class AndroidAdbPlatform(EvemuPlatformMixin, RemotePosixPlatform):
     reader = _AndroidDeviceConfigReader(self.adb)
     return {
       "android": {
+        **reader.shell_settings(),
         "device_config": reader.device_config(),
         "getprop": reader.getprop(),
         "settings": reader.settings(),
@@ -1843,6 +1916,15 @@ class AndroidAdbPlatform(EvemuPlatformMixin, RemotePosixPlatform):
       case ("device_config", flag):
         tool = ("cmd", "device_config")
         namespace, _, key = flag.partition("/")
+      case _ if (
+        (setting := _SHELL_SETTINGS.get(key_path))
+        and value is not None
+        and (args := value.split())
+      ):
+        # Capture stdout so setters that print status (e.g., 'cmd uimode
+        # night') do not write directly to stdout.
+        self.adb.shell(*setting.set_args, *args, capture_output=True)
+        return
     if not (tool and namespace and key):
       raise ValueError(f"Cannot set device config {'.'.join(key_path)!r}.")
     if value is None:

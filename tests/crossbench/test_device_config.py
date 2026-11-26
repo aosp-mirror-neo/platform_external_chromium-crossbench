@@ -7,10 +7,13 @@ import contextlib
 import copy
 import json
 import logging
+import re
 import subprocess
 import unittest
-from typing import Any, Iterator
+from typing import Any, Final, Iterator
 from unittest import mock
+
+from immutabledict import immutabledict
 
 from crossbench import path as pth
 from crossbench.benchmarks.base import Benchmark
@@ -26,6 +29,7 @@ from crossbench.device_config import (
   check_device_config,
 )
 from crossbench.exception import ArgumentTypeMultiException
+from crossbench.plt import android_adb
 from crossbench.plt.android_adb import AndroidAdbPlatform
 from crossbench.plt.base import Platform, SubprocessError
 from tests import test_helper
@@ -50,6 +54,31 @@ def parse_inline(config: dict[str, Any]) -> RequiredDeviceConfig:
   an ArgumentTypeError, so tests can assert on the exact error type.
   """
   return RequiredDeviceConfig.parse_dict(config)
+
+
+_MOCK_SHELL_SETTINGS: Final[
+  immutabledict[DeviceConfigKeyPath, android_adb._ShellSetting]
+] = immutabledict(
+  {
+    ("cmd", "svc", "opt"): android_adb._ShellSetting(
+      get_args=("cmd", "svc", "get"),
+      set_args=("cmd", "svc", "set"),
+      pattern=re.compile(r"Val: (?P<value>[\w ]+)"),
+    ),
+  }
+)
+
+_MOCK_WM_SHELL_SETTINGS: Final[
+  immutabledict[DeviceConfigKeyPath, android_adb._ShellSetting]
+] = immutabledict(
+  {
+    ("wm", "opt"): android_adb._ShellSetting(
+      get_args=("wm", "get"),
+      set_args=("wm", "set"),
+      pattern=re.compile(r"State: (?P<value>\w+)"),
+    ),
+  }
+)
 
 
 class DeviceConfigParserTestCase(CrossbenchFakeFsTestCase):
@@ -578,7 +607,7 @@ class DeviceConfigTestCase(unittest.TestCase):
     self.assertEqual(platform.device_config(), {})
 
   def test_android_device_config_parsing(self):
-    """Verify parsing of Android settings, getprop, and device_config."""
+    """Verify parsing of Android device_config, getprop, and settings."""
     platform, mock_adb = self._create_mock_android_platform()
     mock_adb.shell_stdout.side_effect = [
       (
@@ -654,6 +683,74 @@ class DeviceConfigTestCase(unittest.TestCase):
       ]
     )
     self.assertEqual(mock_adb.shell_stdout.call_count, 5)
+
+  def _read_android_device_config(self, *shell_outputs: str) -> DeviceConfigMap:
+    """Reads Android device_config with mocked shell outputs and empty base."""
+    platform, mock_adb = self._create_mock_android_platform()
+    # Shell setting probes run first, followed by device_config, getprop, and
+    # the three settings namespaces (global, secure, system).
+    mock_adb.shell_stdout.side_effect = [*shell_outputs, "", "", "", "", ""]
+    return platform.device_config()["android"]
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
+  def test_android_shell_settings_parsing(self):
+    """Verify valid shell setting outputs are parsed into nested keys."""
+    for output, expected in (
+      ("Val: on\n", "on"),
+      ("Val: lock 0\n", "lock 0"),
+    ):
+      with self.subTest(output=output):
+        android_config = self._read_android_device_config(output)
+
+        self.assertEqual(android_config["cmd"], {"svc": {"opt": expected}})
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_WM_SHELL_SETTINGS)
+  def test_android_shell_settings_non_cmd_key_path(self):
+    """Verify non-'cmd' and shallower key paths nest cleanly under android."""
+    android_config = self._read_android_device_config("State: auto\n")
+
+    self.assertEqual(android_config["wm"], {"opt": "auto"})
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
+  def test_android_shell_settings_unexpected_output(self):
+    """Verify mismatched shell setting output logs a warning and omits key."""
+    for bad_output in ("Val: \n", "Unexpected\n", ""):
+      with (
+        self.subTest(bad_output=bad_output),
+        self.assertLogs(level="WARNING") as cm,
+      ):
+        android_config = self._read_android_device_config(bad_output)
+
+        self.assertNotIn("cmd", android_config)
+        self.assertIn("Unexpected output for cmd.svc.opt", "\n".join(cm.output))
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
+  def test_android_shell_settings_subprocess_error(self):
+    """Verify failing shell setting read warns, omits key, and continues."""
+    platform, mock_adb = self._create_mock_android_platform()
+    proc = subprocess.CompletedProcess(
+      args=["adb", "shell"], returncode=1, stderr=b"unknown service"
+    )
+    mock_adb.shell_stdout.side_effect = [
+      # _SHELL_SETTINGS: ("cmd", "svc", "opt") fails.
+      SubprocessError(platform, proc),
+      # device_config, getprop, global/secure settings are empty.
+      "",
+      "",
+      "",
+      "",
+      # settings system still succeeds after the shell setting failure.
+      "screen_brightness=100\n",
+    ]
+
+    with self.assertLogs(level="WARNING") as cm:
+      config = platform.device_config()
+
+    self.assertNotIn("cmd", config["android"])
+    self.assertEqual(
+      config["android"]["settings"]["system"], {"screen_brightness": "100"}
+    )
+    self.assertIn("Failed to read cmd.svc.opt", "\n".join(cm.output))
 
   def test_android_system_details(self):
     """Verify that Android platform details include getprop properties."""
@@ -1314,6 +1411,7 @@ class AndroidDeviceConfigWriterTestCase(unittest.TestCase):
           "settings", "put", namespace, "key", "1"
         )
 
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
   def test_set_unsupported_key_paths_raises(self):
     """Verify writing an unsupported key raises without touching adb."""
     for key_path in (
@@ -1326,7 +1424,10 @@ class AndroidDeviceConfigWriterTestCase(unittest.TestCase):
       ("device_config", "/key"),
       ("device_config", "namespace/"),
       ("device_config", "namespace", "key"),
-      ("cmd", "uimode"),
+      ("cmd", "svc"),
+      ("cmd", "svc", "unknown"),
+      ("cmd", "unknown", "opt"),
+      ("cmd", "svc", "opt", "extra"),
       (),
     ):
       with (
@@ -1377,6 +1478,45 @@ class AndroidDeviceConfigWriterTestCase(unittest.TestCase):
     self.adb.shell.assert_called_once_with(
       "cmd", "device_config", "put", "namespace", "sub/key", "1"
     )
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
+  def test_set_shell_setting(self):
+    """Verify a shell setting is written with its configured command."""
+    self.set_value(("cmd", "svc", "opt"), "on")
+
+    self.adb.shell.assert_called_once_with(
+      "cmd", "svc", "set", "on", capture_output=True
+    )
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_WM_SHELL_SETTINGS)
+  def test_set_shell_setting_non_cmd_key_path(self):
+    """Verify non-'cmd' shell settings write via their configured command."""
+    self.set_value(("wm", "opt"), "auto")
+
+    self.adb.shell.assert_called_once_with(
+      "wm", "set", "auto", capture_output=True
+    )
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
+  def test_set_shell_setting_splits_multi_token_value(self):
+    """Verify whitespace-separated tokens are passed as separate arguments."""
+    self.set_value(("cmd", "svc", "opt"), "lock 0")
+
+    self.adb.shell.assert_called_once_with(
+      "cmd", "svc", "set", "lock", "0", capture_output=True
+    )
+
+  @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
+  def test_delete_or_empty_shell_setting_value_raises(self):
+    """Verify deleting or setting a blank shell value raises before adb runs."""
+    for value in (None, "", "   "):
+      with (
+        self.subTest(value=value),
+        self.assertRaisesRegex(ValueError, "Cannot set device config"),
+      ):
+        self.set_value(("cmd", "svc", "opt"), value)
+
+    self.adb.shell.assert_not_called()
 
   def test_set_propagates_adb_errors(self):
     """Verify adb command failures propagate as SubprocessError."""
