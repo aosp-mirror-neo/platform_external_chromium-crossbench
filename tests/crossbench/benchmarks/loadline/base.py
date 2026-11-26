@@ -78,6 +78,14 @@ class BaseLoadLineTestCase(SubStoryTestCase, metaclass=abc.ABCMeta):
         parser.parse_args(["--benchmark-version"])
       self.assertIn(self.loadline_version_string, mock_stdout.getvalue())
 
+  def test_benchmark_version(self) -> None:
+    version = self.benchmark_cls.version()
+
+    self.assertTrue(all(isinstance(part, int) for part in version))
+    self.assertEqual(
+      self.benchmark_cls.version_str(), self.loadline_version_string
+    )
+
   @abc.abstractmethod
   def _get_interactive_pages(self, benchmark) -> Sequence[InteractivePage]:
     pass

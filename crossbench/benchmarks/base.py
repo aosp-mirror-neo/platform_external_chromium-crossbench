@@ -105,6 +105,15 @@ class Benchmark(abc.ABC):
     return ("default",)
 
   @classmethod
+  def version_str(cls) -> str:
+    """Return a dot-separated string representation of the benchmark version."""
+    return ".".join(map(str, cls.version()))
+
+  @classmethod
+  def parse_version(cls, value: str) -> VersionParts:
+    return tuple(int(part) for part in value.split("."))
+
+  @classmethod
   def aliases(cls) -> tuple[str, ...]:
     return ()
 

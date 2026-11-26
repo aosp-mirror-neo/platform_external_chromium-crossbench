@@ -41,6 +41,10 @@ class ResultsSummaryProbeTestCase(unittest.TestCase):
       result_file = pth.LocalPath(tmp_dir) / "cb.results.json"
       browser_data = {"log": {}}
       run_data = {
+        "benchmark": {
+          "name": "test",
+          "version": "1.0",
+        },
         "browser": browser_data,
         "cwd": "run/0",
         "probes": {},
@@ -62,6 +66,109 @@ class ResultsSummaryProbeTestCase(unittest.TestCase):
     merged_data = mock_write.call_args.args[1]
     self.assertEqual(len(merged_data["repetitions"]), 1)
     self.assertEqual(merged_data["repetitions"][0]["cwd"], "run/0")
+
+  def test_merge_propagates_benchmark_metadata(self) -> None:
+    probe = ResultsSummaryProbe()
+    benchmark_meta = {
+      "name": "web-power",
+      "version": "1.1.15",
+    }
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      root = pth.LocalPath(tmp_dir)
+      rep_file = root / "run.json"
+      with rep_file.open("w", encoding="utf-8") as f:
+        json.dump(
+          {
+            "browser": {
+              "unique_name": "chrome_v1",
+              "log": {},
+            },
+            "cwd": "run/0",
+            "benchmark": benchmark_meta,
+            "probes": {},
+            "success": True,
+            "errors": [],
+          },
+          f,
+        )
+
+      run = mock.Mock()
+      run.results = ProbeResultDict(root / "run")
+      run.results[probe] = LocalProbeResult(json=(rep_file,))
+
+      rep_group = mock.Mock()
+      rep_group.runs = [run]
+      rep_group.path = root / "story_0"
+      rep_group.story.details_json.return_value = {
+        "name": "story_0",
+        "duration": 10.0,
+      }
+      rep_group.info = {}
+      rep_group.results.to_json.return_value = {}
+      rep_group.is_success = True
+      rep_group.exceptions.error_messages.return_value = []
+
+      merged_rep_file = root / "story_0_merged.json"
+
+      def write_rep_result(_, data, csv_formatter=None):
+        merged_rep_file.write_text(json.dumps(data), encoding="utf-8")
+        return LocalProbeResult(json=(merged_rep_file,))
+
+      with mock.patch.object(
+        probe,
+        "write_group_result",
+        side_effect=write_rep_result,
+      ):
+        res = probe.merge_repetitions(rep_group)
+
+      merged_rep = json.loads(res.json.read_text())
+      self.assertEqual(merged_rep["benchmark"], benchmark_meta)
+
+      story_group = mock.Mock()
+      story_group.results = {
+        probe: LocalProbeResult(json=(merged_rep_file,)),
+      }
+      stories_group = mock.Mock()
+      stories_group.repetitions_groups = [story_group]
+      stories_group.path = root / "browser"
+      stories_group.info = {}
+      stories_group.results.to_json.return_value = {}
+      stories_group.is_success = True
+      stories_group.exceptions.error_messages.return_value = []
+
+      merged_stories_file = root / "browser_merged.json"
+
+      def write_stories_result(_, data, csv_formatter=None):
+        merged_stories_file.write_text(json.dumps(data), encoding="utf-8")
+        return LocalProbeResult(json=(merged_stories_file,))
+
+      with mock.patch.object(
+        probe,
+        "write_group_result",
+        side_effect=write_stories_result,
+      ):
+        probe.merge_stories(stories_group)
+
+      browser_data = json.loads(merged_stories_file.read_text())
+      self.assertEqual(browser_data["benchmark"], benchmark_meta)
+
+      browsers_group = mock.Mock()
+      browsers_story_group = mock.Mock()
+      browsers_story_group.results = {
+        probe: LocalProbeResult(json=(merged_stories_file,)),
+      }
+      browsers_group.story_groups = [browsers_story_group]
+      browsers_group.path = root
+      browsers_group.results.to_json.return_value = {}
+      browsers_group.is_success = True
+      browsers_group.exceptions.error_messages.return_value = []
+
+      with mock.patch.object(probe, "write_group_result") as mock_write:
+        probe.merge_browsers(browsers_group)
+
+      top_data = mock_write.call_args.args[1]
+      self.assertEqual(top_data["benchmark"], benchmark_meta)
 
 
 if __name__ == "__main__":

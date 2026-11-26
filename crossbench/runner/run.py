@@ -69,6 +69,7 @@ class RunTimingDetailsJson(TypedDict):
 class RunDetailsJson(TypedDict):
   cwd: str
   name: str | None
+  benchmark: JsonDict
   story: JsonDict
   browser: JsonDict
   run: RunMetaDetailsJson
@@ -189,6 +190,10 @@ class Run(ResultOrigin):
     return {
       "cwd": str(self.out_dir),
       "name": self.name,
+      "benchmark": {
+        "name": self.benchmark.NAME,
+        "version": self.benchmark.version_str(),
+      },
       "story": self.story.details_json(),
       "browser": self.get_browser_details_json(),
       "run": {

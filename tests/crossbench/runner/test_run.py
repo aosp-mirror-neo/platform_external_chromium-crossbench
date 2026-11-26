@@ -172,6 +172,22 @@ class RunTestCase(BaseRunGroupTestCase):
     run.mark_skipped()
     self.assertTrue(run.is_skipped)
 
+  def test_details_json_includes_benchmark(self) -> None:
+    run = self._create_run()
+    session = run.browser_session
+    session.set_ready()
+
+    with session.open():
+      details = run.details_json()
+
+    self.assertEqual(
+      details["benchmark"],
+      {
+        "name": run.benchmark.NAME,
+        "version": run.benchmark.version_str(),
+      },
+    )
+
   def test_run_without_starting_browser(self) -> None:
 
     class NoBrowserStory(MockStory):

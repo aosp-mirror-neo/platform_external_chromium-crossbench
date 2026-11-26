@@ -28,6 +28,7 @@ if TYPE_CHECKING:
   import argparse
 
   from crossbench.action_runner.action_runner import ActionRunner
+  from crossbench.benchmarks.base import VersionParts
   from crossbench.benchmarks.loading.page.base import Page
   from crossbench.browsers.attributes import BrowserAttributes
   from crossbench.cli.parser import CBArgumentParser
@@ -260,6 +261,11 @@ class LoadLine2Benchmark(LoadLineBenchmark):
   PROBES: ClassVar = (LoadLine2Probe,)
   DEFAULT_REPETITIONS: ClassVar = 50
   DETERMINISTIC: bool = False
+
+  @classmethod
+  @override
+  def version(cls) -> VersionParts:
+    return cls.parse_version(VERSION_STRING)
 
   def __init__(self, *args, deterministic: bool = False, **kwargs) -> None:
     super().__init__(*args, **kwargs)

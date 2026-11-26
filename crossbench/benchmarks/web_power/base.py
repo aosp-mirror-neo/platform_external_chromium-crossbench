@@ -51,6 +51,7 @@ if TYPE_CHECKING:
 
   from crossbench import path as pth
   from crossbench.action_runner.config import ActionRunnerConfig
+  from crossbench.benchmarks.base import VersionParts
   from crossbench.browsers.attributes import BrowserAttributes
   from crossbench.cli.config.browser import BrowserConfig
   from crossbench.flags.base import Flags
@@ -395,6 +396,11 @@ class WebPowerBenchmarkBase(SubStoryBenchmark):
     return (
       config.config_dir() / "benchmark" / "web_power" / "device_config.hjson"
     )
+
+  @classmethod
+  @override
+  def version(cls) -> VersionParts:
+    return cls.parse_version(VERSION_STRING)
 
   @override
   def required_device_config(self, platform: Platform) -> RequiredDeviceConfig:

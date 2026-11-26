@@ -26,6 +26,7 @@ from crossbench.probes.probe_context import ProbeContext
 if TYPE_CHECKING:
   import argparse
 
+  from crossbench.benchmarks.base import VersionParts
   from crossbench.benchmarks.loading.page.base import Page
   from crossbench.browsers.attributes import BrowserAttributes
   from crossbench.flags.base import Flags
@@ -167,6 +168,11 @@ class LoadLine2WebApiProbeContext(ProbeContext[LoadLine2WebApiProbe]):
 class LoadLine2WebApiBenchmark(LoadLineBenchmark):
   PROBES: ClassVar = (LoadLine2WebApiProbe,)
   DEFAULT_REPETITIONS: ClassVar = 50
+
+  @classmethod
+  @override
+  def version(cls) -> VersionParts:
+    return cls.parse_version(VERSION_STRING)
 
   @classmethod
   def _base_dir(cls) -> pth.LocalPath:

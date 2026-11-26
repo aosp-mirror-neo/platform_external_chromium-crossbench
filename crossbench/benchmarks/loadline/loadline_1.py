@@ -17,6 +17,7 @@ from crossbench.probes.probe_context import ProbeContext
 if TYPE_CHECKING:
   import pandas as pd
 
+  from crossbench.benchmarks.base import VersionParts
   from crossbench.browsers.attributes import BrowserAttributes
   from crossbench.cli.parser import CBArgumentParser
   from crossbench.flags.base import Flags
@@ -125,6 +126,11 @@ class LoadLine1ProbeContext(ProbeContext[LoadLine1Probe]):
 class LoadLine1Benchmark(LoadLineBenchmark):
   PROBES: ClassVar = (LoadLine1Probe,)
   DEFAULT_REPETITIONS: ClassVar = 100
+
+  @classmethod
+  @override
+  def version(cls) -> VersionParts:
+    return cls.parse_version(VERSION_STRING)
 
   @classmethod
   @override

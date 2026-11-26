@@ -7,6 +7,7 @@ import unittest
 from typing import TYPE_CHECKING, override
 
 from crossbench.benchmarks.base import (
+  Benchmark,
   PressBenchmarkStoryFilter,
   RangePatternError,
   RegexFilter,
@@ -358,6 +359,17 @@ class StoryFilterTestCase(unittest.TestCase):
     self.assertTrue(args.separate)
     args = parser.parse_args(["--combined"])
     self.assertFalse(args.separate)
+
+
+class BenchmarkVersionTestCase(unittest.TestCase):
+  def test_default_version(self) -> None:
+    self.assertEqual(Benchmark.version(), ("default",))
+    self.assertEqual(Benchmark.version_str(), "default")
+
+  def test_parse_version(self) -> None:
+    self.assertEqual(Benchmark.parse_version("1.2.3"), (1, 2, 3))
+    with self.assertRaises(ValueError):
+      Benchmark.parse_version("1.a")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,7 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
   def merge_repetitions(self, group: RepetitionsRunGroup) -> ProbeResult:
     repetitions: list[JsonDict] = []
     browser: JsonDict | None = None
+    benchmark: JsonDict | None = None
 
     has_empty_results = False
     for run in group.runs:
@@ -71,6 +72,8 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
       if browser is None:
         browser = repetition_data["browser"]
         del browser["log"]
+      if benchmark is None:
+        benchmark = repetition_data.get("benchmark")
       repetition_summary: JsonDict = {
         "cwd": repetition_data["cwd"],
         "probes": repetition_data["probes"],
@@ -82,6 +85,7 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
     merged_data: JsonDict = {
       "cwd": str(group.path),
       "story": group.story.details_json(),
+      "benchmark": benchmark,
       "browser": browser,
       "group": group.info,
       "repetitions": repetitions,
@@ -97,6 +101,7 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
   def merge_stories(self, group: StoriesRunGroup) -> ProbeResult:
     stories: JsonDict = {}
     browser = None
+    benchmark: JsonDict | None = None
 
     for repetitions_group in group.repetitions_groups:
       source_file = repetitions_group.results[self].json
@@ -105,6 +110,8 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
         merged_story_data = json.load(f)
       if browser is None:
         browser = merged_story_data["browser"]
+      if benchmark is None:
+        benchmark = merged_story_data.get("benchmark")
       story_info = merged_story_data["story"]
       stories[story_info["name"]] = {
         "cwd": merged_story_data["cwd"],
@@ -115,6 +122,7 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
 
     merged_data: JsonDict = {
       "cwd": str(group.path),
+      "benchmark": benchmark,
       "browser": browser,
       "stories": stories,
       "group": group.info,
@@ -127,11 +135,14 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
   @override
   def merge_browsers(self, group: BrowsersRunGroup) -> ProbeResult:
     browsers: JsonDict = {}
+    benchmark: JsonDict | None = None
     for story_group in group.story_groups:
       source_file = story_group.results[self].json
       assert source_file.is_file()
       with source_file.open(encoding="utf-8") as f:
         merged_browser_data = json.load(f)
+      if benchmark is None:
+        benchmark = merged_browser_data.get("benchmark")
       browser_info = merged_browser_data["browser"]
       browsers[browser_info["unique_name"]] = {
         "cwd": merged_browser_data["cwd"],
@@ -141,6 +152,7 @@ class ResultsSummaryProbe(InternalJsonResultProbe):
 
     merged_data: JsonDict = {
       "cwd": str(group.path),
+      "benchmark": benchmark,
       "browsers": browsers,
       "probes": group.results.to_json(),
       "success": group.is_success,

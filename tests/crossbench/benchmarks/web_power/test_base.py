@@ -465,6 +465,12 @@ class WebPowerBenchmarkBaseTestCase(BaseWebPowerBenchmarkTestCase):
         parser.parse_args(["--benchmark-version"])
       self.assertIn(VERSION_STRING, mock_stdout.getvalue())
 
+  def test_benchmark_version(self) -> None:
+    version = MockWebPowerBenchmark.version()
+
+    self.assertTrue(all(isinstance(part, int) for part in version))
+    self.assertEqual(MockWebPowerBenchmark.version_str(), VERSION_STRING)
+
   def test_kwargs_from_cli_stabilization(self) -> None:
     args = self.parse_args("--site", "cnn", "--stabilization=10s")
     kwargs = MockWebPowerBenchmark.kwargs_from_cli(args)
