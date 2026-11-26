@@ -358,7 +358,15 @@ class WprGoFinder(BaseCrossbenchPathFinder):
       env=env,
       capture_output=True,
     )
-    return out_dir / binary
+    built_path = out_dir / binary
+    if not target_platform.is_win:
+      return built_path
+    # build.py names the output after the Go source file, without the .exe
+    # suffix Windows needs. Always move the fresh build over the .exe so that a
+    # stale .exe from a previous build is never used.
+    exe_path = out_dir / f"{binary}.exe"
+    self.platform.local_path(built_path).replace(exe_path)
+    return exe_path
 
   @override
   def is_valid_path(self, candidate: pth.AnyPath) -> bool:

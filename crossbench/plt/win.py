@@ -11,14 +11,23 @@ import shutil
 from typing import TYPE_CHECKING, override
 
 if TYPE_CHECKING:
+  from crossbench.plt.display_info import DisplayResolution
   from crossbench.plt.types import TupleCmdArgs
+
+import psutil
 
 from crossbench import path as pth
 from crossbench.helper.size import Size
 from crossbench.plt.base import Platform
 from crossbench.plt.bin import Binaries
+from crossbench.plt.process_meminfo import ProcessMeminfo
 from crossbench.plt.signals import WinSignals
 from crossbench.plt.version import PlatformVersion
+from crossbench.plt.win_screenshot import (
+  CtypesWin32ScreenCaptureApi,
+  Win32ScreenCaptureApi,
+  WinScreenCapture,
+)
 
 
 class WinVersion(PlatformVersion):
@@ -222,6 +231,22 @@ class WinPlatform(Platform):
     assert self._clipboard_bin
     self.sh(*self._clipboard_bin, input=text.encode("utf-8"), check=True)
 
+  def _create_win32_screen_capture_api(self) -> Win32ScreenCaptureApi:
+    return CtypesWin32ScreenCaptureApi()
+
+  @functools.cached_property
+  def _screen_capture(self) -> WinScreenCapture:
+    self.assert_is_local()
+    return WinScreenCapture(self._create_win32_screen_capture_api())
+
+  @override
+  def display_resolution(self) -> DisplayResolution:
+    return self._screen_capture.resolution()
+
+  @override
+  def screenshot(self, result_path: pth.AnyPath) -> None:
+    self._screen_capture.save_png(self.local_path(result_path))
+
   @override
   def gpu_vram_used(self) -> dict[str, float]:
     # 1. Try nvidia-smi
@@ -272,3 +297,74 @@ class WinPlatform(Platform):
       return {"gpu_wmic": total_bytes / Size.MiB}
 
     return super().gpu_vram_used()
+
+  @override
+  def process_meminfo(
+    self,
+    process_name: str,
+    timeout: dt.timedelta = dt.timedelta(seconds=10),
+  ) -> list[ProcessMeminfo]:
+    del timeout
+    self.assert_is_local()
+    target = process_name.lower()
+    target_name = self.path(process_name).name.lower()
+    meminfos: list[ProcessMeminfo] = []
+    for proc in psutil.process_iter(
+      ["pid", "name", "exe", "cmdline", "memory_info"]
+    ):
+      with contextlib.suppress(psutil.Error, OSError):
+        if meminfo := self._extract_process_meminfo(proc, target, target_name):
+          meminfos.append(meminfo)
+    return meminfos
+
+  def _extract_process_meminfo(
+    self, proc: psutil.Process, target: str, target_name: str
+  ) -> ProcessMeminfo | None:
+    if not self._matches_process(proc, target, target_name):
+      return None
+    info = proc.info
+    if not (mem := info.get("memory_info")):
+      return None
+    name = info.get("name") or ""
+    cmdline_list = info.get("cmdline") or []
+    proc_type = next(
+      (arg for arg in cmdline_list if arg.startswith("--type=")), ""
+    )
+    short_name = f"{name or target_name} {proc_type}".strip()
+    return ProcessMeminfo(
+      pid=int(info["pid"]),
+      name=short_name,
+      pss_total=int(mem.private) // 1024,
+      rss_total=int(mem.rss) // 1024,
+      swap_total=0,
+    )
+
+  def _matches_process(
+    self, proc: psutil.Process, target: str, target_name: str
+  ) -> bool:
+    info = proc.info
+    if (exe := info.get("exe")) and exe.lower() == target:
+      return True
+    if (name := info.get("name")) and name.lower() in (
+      target,
+      target_name,
+      f"{target}.exe",
+    ):
+      return True
+    if (cmdline := info.get("cmdline")) and cmdline[0].lower() == target:
+      return True
+    return False
+
+  @override
+  def system_meminfo(
+    self,
+    timeout: dt.timedelta = dt.timedelta(seconds=10),
+  ) -> dict[str, float]:
+    del timeout
+    self.assert_is_local()
+    vm = psutil.virtual_memory()
+    return {
+      "total_ram_kb": float(vm.total // 1024),
+      "free_kb": float(vm.available // 1024),
+      "dma_buf_kb": 0.0,
+    }

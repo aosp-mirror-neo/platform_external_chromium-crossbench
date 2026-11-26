@@ -341,6 +341,34 @@ class WprToolsFinderTestCase(BasePosixMockPlatformTestCase):
       root / "cache/webpagereplay/android/arm64/wpr",
     )
 
+  def test_wpr_bin_for_windows_replaces_stale_exe(self) -> None:
+    self._with_arch(self.platform, "x64")
+    win_platform = self._with_arch(WinMockPlatform(), "x64")
+    root = test_helper.root_dir()
+    self.fs.create_file(root / "third_party/webpagereplay/scripts/build.py")
+    out_dir = root / "cache/webpagereplay/win/x64"
+    # A stale .exe from a previous build and the fresh build output.
+    self.fs.create_file(out_dir / "wpr.exe", contents="stale")
+    self.fs.create_file(out_dir / "wpr", contents="fresh")
+    self.expect_sh(
+      sys.executable,
+      root / "third_party/webpagereplay/scripts/build.py",
+      "--os",
+      "win",
+      "--arch",
+      "x64",
+      "--out-dir",
+      out_dir,
+      "--binary",
+      "wpr",
+      result="",
+    )
+    self.assertEqual(
+      WprGoFinder(self.platform).wpr(win_platform), out_dir / "wpr.exe"
+    )
+    self.assertEqual((out_dir / "wpr.exe").read_text(), "fresh")
+    self.assertFalse((out_dir / "wpr").exists())
+
   def test_httparchive_and_wpr_bins_with_overrides(self):
     self._with_arch(self.platform, "x64")
     self._setup_adb()

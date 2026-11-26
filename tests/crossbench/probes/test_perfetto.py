@@ -4,10 +4,11 @@
 import argparse
 import logging
 import unittest
-from typing import override
+from typing import TYPE_CHECKING, override
 from unittest import mock
 
 import crossbench.path as pth
+from crossbench.browsers.attributes import BrowserAttributes
 from crossbench.browsers.settings import Settings
 from crossbench.cli.config.probe import ProbeConfig
 from crossbench.cli.config.probe_list import ProbeListConfig
@@ -29,6 +30,7 @@ from crossbench.probes.cb_perfetto.context.windows import (
 )
 from crossbench.probes.cb_perfetto.downloader import PerfettoToolDownloader
 from crossbench.probes.cb_perfetto.perfetto import TraceConfig
+from crossbench.probes.probe_error import ProbeIncompatibleBrowser
 from tests import test_helper
 from tests.crossbench.base import (
   CrossbenchConfigTestMixin,
@@ -46,6 +48,9 @@ from tests.crossbench.mock_helper import (
 )
 from tests.crossbench.runner.helper import MockRun
 from third_party.protoc import trace_config_pb2
+
+if TYPE_CHECKING:
+  from crossbench.plt.base import Platform
 
 
 class TraceConfigTestCase(unittest.TestCase):
@@ -597,6 +602,111 @@ class PerfettoProbeContextTestCase(
     ].config.chromium_sampling_heap_profiler
     self.assertEqual(rt_heap_config.sampling_interval_bytes, 4096)
     self.assertEqual(rt_heap_config.sampling_interval_ms, 2000)
+
+  def test_windows_context_setup(self) -> None:
+    trace_config = trace_config_pb2.TraceConfig()
+    buf0 = trace_config.buffers.add()
+    buf0.name = "metadata"
+    buf0.size_kb = 1024
+    buf1 = trace_config.buffers.add()
+    buf1.name = "track_event"
+    buf1.size_kb = 4096
+    ds = trace_config.data_sources.add()
+    ds.config.name = "track_event"
+    ds.config.target_buffer_name = "track_event"
+    probe = PerfettoProbe(trace_config=trace_config)
+
+    platform = WinMockPlatform(fake_fs=self.fs)
+    browser = mock.Mock(
+      platform=platform, host_platform=platform, unique_name="mock_chrome"
+    )
+    browser_session = mock.Mock()
+    browser_session.browser = browser
+    browser_session.root_dir = pth.LocalPath("/tmp/results")
+    self.fs.create_dir(browser_session.root_dir)
+    run = MockRun(
+      runner=mock.Mock(), browser_session=browser_session, story=mock.Mock()
+    )
+    self.fs.create_dir(run.out_dir)
+    run.get_default_probe_result_path = mock.Mock(
+      return_value=run.out_dir / "perfetto"
+    )
+
+    context = WindowsPerfettoProbeContext(probe, run)
+    with self.assertLogs(level="WARNING") as logs:
+      context.setup()
+    self.assertIn("replacing trace config buffer names", logs.output[0])
+
+    config_pb_path = run.out_dir / "perfetto_config.pb"
+    self.assertTrue(self.fs.exists(config_pb_path))
+    parsed = trace_config_pb2.TraceConfig()
+    parsed.ParseFromString(platform.read_bytes(config_pb_path))
+    # Buffer sizes are left as configured.
+    self.assertEqual(parsed.buffers[0].size_kb, 1024)
+    self.assertEqual(parsed.buffers[1].size_kb, 4096)
+    for buf in parsed.buffers:
+      self.assertFalse(buf.HasField("name"))
+    self.assertEqual(parsed.data_sources[0].config.target_buffer, 1)
+    self.assertFalse(
+      parsed.data_sources[0].config.HasField("target_buffer_name")
+    )
+
+  def _validate_browser(
+    self, trace_config: trace_config_pb2.TraceConfig, platform: Platform
+  ) -> None:
+    probe = PerfettoProbe(trace_config=trace_config)
+    browser = mock.Mock(platform=platform)
+    browser.attributes.return_value = BrowserAttributes.CHROMIUM_BASED
+    probe.validate_browser(mock.Mock(), browser)
+
+  def _write_into_file_config(self) -> trace_config_pb2.TraceConfig:
+    trace_config = trace_config_pb2.TraceConfig()
+    trace_config.buffers.add().size_kb = 1024
+    trace_config.write_into_file = True
+    return trace_config
+
+  def test_validate_write_into_file_on_windows(self) -> None:
+    with self.assertRaisesRegex(
+      ProbeIncompatibleBrowser, "write_into_file are not supported on Windows"
+    ):
+      self._validate_browser(self._write_into_file_config(), WinMockPlatform())
+
+  def test_validate_write_into_file_on_macos(self) -> None:
+    # Chrome streams startup traces into the file on macOS.
+    self._validate_browser(self._write_into_file_config(), MacOsMockPlatform())
+
+  def test_validate_without_write_into_file_on_windows(self) -> None:
+    trace_config = trace_config_pb2.TraceConfig()
+    trace_config.buffers.add().size_kb = 1024
+    self._validate_browser(trace_config, WinMockPlatform())
+
+  def _unknown_buffer_name_config(self) -> trace_config_pb2.TraceConfig:
+    trace_config = trace_config_pb2.TraceConfig()
+    trace_config.buffers.add().name = "track_event"
+    ds = trace_config.data_sources.add()
+    ds.config.name = "track_event"
+    ds.config.target_buffer_name = "missing"
+    return trace_config
+
+  def test_validate_unknown_buffer_name_on_windows(self) -> None:
+    with self.assertRaisesRegex(
+      ProbeIncompatibleBrowser,
+      r"unknown target_buffer_name values \['missing'\]",
+    ):
+      self._validate_browser(
+        self._unknown_buffer_name_config(), WinMockPlatform()
+      )
+
+  def test_validate_unknown_buffer_name_on_macos(self) -> None:
+    # Only Windows replaces buffer names with indices.
+    self._validate_browser(
+      self._unknown_buffer_name_config(), MacOsMockPlatform()
+    )
+
+  def test_validate_known_buffer_name_on_windows(self) -> None:
+    trace_config = self._unknown_buffer_name_config()
+    trace_config.data_sources[0].config.target_buffer_name = "track_event"
+    self._validate_browser(trace_config, WinMockPlatform())
 
 
 if __name__ == "__main__":

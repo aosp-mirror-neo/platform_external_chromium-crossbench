@@ -2,10 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import logging
 from typing import TYPE_CHECKING, override
 
 from crossbench.probes.cb_perfetto.constants import PERFETTO_TRACE_NAME
 from crossbench.probes.cb_perfetto.context.base import PerfettoProbeContext
+from third_party.protoc import trace_config_pb2
 
 if TYPE_CHECKING:
   from crossbench import path as pth
@@ -37,12 +39,39 @@ class WindowsPerfettoProbeContext(PerfettoProbeContext):
 
   @override
   def _setup_push_perfetto_config(self) -> None:
+    trace_config = trace_config_pb2.TraceConfig()
+    trace_config.CopyFrom(self.probe.trace_config)
+    self._replace_buffer_names_with_indices(trace_config)
     super()._setup_push_perfetto_config()
     # --trace-perfetto-config-file only supports the binary format.
     self.host_platform.write_bytes(
       self.get_browser_config_path(),
-      self.probe.trace_config.SerializeToString(),
+      trace_config.SerializeToString(),
     )
+
+  def _replace_buffer_names_with_indices(
+    self, trace_config: trace_config_pb2.TraceConfig
+  ) -> None:
+    # Buffer names are stripped when passing the config via Mojo to child
+    # processes, causing startup sessions that specify buffer names to fail
+    # adoption by the tracing service.
+    buf_index_by_name = {
+      buf.name: idx for idx, buf in enumerate(trace_config.buffers) if buf.name
+    }
+    if buf_index_by_name:
+      logging.warning(
+        "Perfetto: replacing trace config buffer names with indices %s, "
+        "Chrome's internal tracing service does not support buffer names "
+        "for startup tracing.",
+        buf_index_by_name,
+      )
+    for buf in trace_config.buffers:
+      buf.ClearField("name")
+    for ds in trace_config.data_sources:
+      # PerfettoProbe.validate_browser() rejects unknown buffer names.
+      if target_name := ds.config.target_buffer_name:
+        ds.config.target_buffer = buf_index_by_name[target_name]
+        ds.config.ClearField("target_buffer_name")
 
   @override
   def start(self) -> None:

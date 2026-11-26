@@ -33,6 +33,7 @@ from crossbench.probes.cb_perfetto.start_tracing_sequence import (
   StartTracingSequence,
 )
 from crossbench.probes.probe import Probe, ProbeConfigParser, ProbeKeyT
+from crossbench.probes.probe_error import ProbeIncompatibleBrowser
 from crossbench.probes.result_location import ResultLocation
 from crossbench.probes.trace_processor import profile_helper
 from third_party.protoc import trace_config_pb2
@@ -428,6 +429,39 @@ class PerfettoProbe(Probe):
   def validate_browser(self, env: RunnerEnv, browser: Browser) -> None:
     super().validate_browser(env, browser)
     self.expect_browser(browser, BrowserAttributes.CHROMIUM_BASED)
+    if browser.platform.is_win:
+      self._validate_windows_trace_config(browser)
+
+  def _validate_windows_trace_config(self, browser: Browser) -> None:
+    if self.trace_config.write_into_file:
+      # Chrome only supports writing startup traces directly into a file on
+      # POSIX (crbug.com/40736989), and the tracing service rejects sessions
+      # with write_into_file but no file.
+      raise ProbeIncompatibleBrowser(
+        self,
+        browser,
+        "Perfetto trace configs with write_into_file are not supported on "
+        "Windows, please use a trace config without write_into_file.",
+      )
+    if unknown_names := self._unknown_target_buffer_names():
+      # On Windows buffer names are replaced with indices (see
+      # WindowsPerfettoProbeContext), so every name must match a buffer.
+      raise ProbeIncompatibleBrowser(
+        self,
+        browser,
+        "Perfetto trace config data sources use unknown target_buffer_name "
+        f"values {unknown_names}, please use names of the configured buffers.",
+      )
+
+  def _unknown_target_buffer_names(self) -> list[str]:
+    buffer_names = {buf.name for buf in self.trace_config.buffers if buf.name}
+    return sorted(
+      {
+        name
+        for ds in self.trace_config.data_sources
+        if (name := ds.config.target_buffer_name) and name not in buffer_names
+      }
+    )
 
   @override
   def attach(self, browser: Browser) -> None:

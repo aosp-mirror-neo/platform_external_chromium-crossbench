@@ -32,7 +32,9 @@ ROOT_DIR: Final[LocalPath] = LocalPath(__file__).parents[1]
 RESULTS_DIR: Final[LocalPath] = ROOT_DIR / "results"
 LATEST_RESULT_DIR: Final[LocalPath] = RESULTS_DIR / "latest"
 
-MAX_PART_LEN: Final[int] = 255
+# Cap sanitized path segments so deep output hierarchies (e.g. combined
+# multi-tab story names) stay within the 260-character Windows MAX_PATH limit.
+MAX_PART_LEN: Final[int] = 100
 
 _UNSAFE_FILENAME_CHARS_RE: Final[re.Pattern[str]] = re.compile(
   r"[^a-zA-Z0-9+\-_.]"

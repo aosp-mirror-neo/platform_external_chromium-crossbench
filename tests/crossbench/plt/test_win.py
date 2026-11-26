@@ -297,6 +297,53 @@ class WinMockPlatformTestCase(
     vram = self.platform.gpu_vram_used()
     self.assertEqual(vram, {})
 
+  def test_process_and_system_meminfo(self) -> None:
+    assert isinstance(self.platform, WinPlatform)
+    fake_mem = mock.Mock(rss=2048 * 1024, private=1536 * 1024)
+    fake_proc = mock.Mock(
+      info={
+        "pid": 1234,
+        "name": "chrome.exe",
+        "exe": r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        "cmdline": ["chrome.exe", "--type=renderer"],
+        "memory_info": fake_mem,
+      }
+    )
+    other_proc = mock.Mock(
+      info={
+        "pid": 5678,
+        "name": "explorer.exe",
+        "exe": r"C:\Windows\explorer.exe",
+        "cmdline": ["explorer.exe"],
+        "memory_info": fake_mem,
+      }
+    )
+    with mock.patch(
+      "psutil.process_iter", return_value=[fake_proc, other_proc]
+    ):
+      meminfos = WinPlatform.process_meminfo(
+        self.platform, "chrome.exe", dt.timedelta(seconds=10)
+      )
+    self.assertEqual(len(meminfos), 1)
+    self.assertEqual(meminfos[0].pid, 1234)
+    self.assertEqual(meminfos[0].name, "chrome.exe --type=renderer")
+    self.assertEqual(meminfos[0].pss_total, 1536)
+    self.assertEqual(meminfos[0].rss_total, 2048)
+
+    fake_vm = mock.Mock(total=16 * 1024 * 1024, available=4 * 1024 * 1024)
+    with mock.patch("psutil.virtual_memory", return_value=fake_vm):
+      sys_mem = WinPlatform.system_meminfo(
+        self.platform, dt.timedelta(seconds=10)
+      )
+    self.assertEqual(
+      sys_mem,
+      {
+        "total_ram_kb": 16384.0,
+        "free_kb": 4096.0,
+        "dma_buf_kb": 0.0,
+      },
+    )
+
 
 class WinPlatformClipboardTestCase(PlatformClipboardTestCase):
   __test__ = True

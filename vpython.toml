@@ -41,5 +41,6 @@ dependencies = [
   'scipy==1.17.1',
   'pyrefly==1.1.0; sys_platform != "linux" or platform_machine == "x86_64"',
   'google-genai==1.26.0',
-  'pyasyncore==1.0.5'
+  'pyasyncore==1.0.5',
+  'pillow==12.2.0'
 ]
