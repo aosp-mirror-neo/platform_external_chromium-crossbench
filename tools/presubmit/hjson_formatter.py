@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import pathlib
-import platform
 import subprocess
 from typing import TYPE_CHECKING
 
@@ -21,26 +20,9 @@ def GetNodeExecutable(input_api: InputApi) -> str:
     pathlib.Path(input_api.change.RepositoryRoot()) / "third_party" / "node"
   )
 
-  node_bin = ""
-
-  if input_api.platform == "linux":
-    node_bin = str(node_base / "linux" / "node-linux-x64" / "bin" / "node")
   if input_api.platform == "win32":
-    node_bin = str(node_base / "win" / "node.exe")
-  if input_api.platform == "darwin":
-    if platform.machine() == "arm64":
-      node_bin = str(
-        node_base / "mac_arm64" / "node-darwin-arm64" / "bin" / "node"
-      )
-    else:
-      node_bin = str(node_base / "mac" / "node-darwin-x64" / "bin" / "node")
-
-  if not node_bin:
-    raise NotImplementedError(
-      f"{input_api.platform} {platform.machine()} is not a supported platform."
-    )
-
-  return node_bin
+    return str(node_base / "node.exe")
+  return str(node_base / "bin" / "node")
 
 
 def FormatHjsonFile(input_api: InputApi, hjson_file: pathlib.Path) -> str:

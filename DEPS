@@ -86,6 +86,8 @@ vars = {
   # the commit queue can handle CLs rolling Speedometer v3.1
   # and whatever else without interference from each other.
   'speedometer_3.1_revision': '1386415be8fef2f6b6bbdbe1828872471c5d802a',
+
+  'nodejs_version': '26.13.1',
 }
 
 # Only these hosts are allowed for dependencies in this DEPS file.
@@ -93,7 +95,6 @@ vars = {
 allowed_hosts = [
   'chrome-internal.googlesource.com',
   'chromium.googlesource.com',
-  'chromium-nodejs',
 ]
 
 deps = {
@@ -106,60 +107,16 @@ deps = {
     'condition': 'not build_with_chromium',
   },
   'third_party/hjson_js': Var('hjson_js_git') + '@' + Var('hjson_js_revision'),
-  'third_party/node/linux': {
-      'dep_type': 'gcs',
-      'bucket': 'chromium-nodejs',
-      'objects': [
-          {
-              'object_name': 'fa98c6432de572206bc5519f85e9c96bd518b039',
-              'sha256sum': 'fb563633b5bfe2d4307075c54c6bb54664a3b5ec6bc811f5b15742720549007a',
-              'size_bytes': 50288755,
-              'generation': 1730835522207929,
-              'output_file': 'node-linux-x64.tar.gz',
-          },
-      ],
-  },
-  'third_party/node/mac': {
-      'dep_type': 'gcs',
-      'condition': 'host_os == "mac"',
-      'bucket': 'chromium-nodejs',
-      'objects': [
-          {
-              'object_name': '4c8952a65a1ce7a2e4cff6db68f9b7454c46349f',
-              'sha256sum': 'fadb4530fbe6e35ed298848c66102a0aa7d92974789e6222c4eadee26a381e7e',
-              'size_bytes': 45672893,
-              'generation': 1730835514382259,
-              'output_file': 'node-darwin-x64.tar.gz',
-          },
-      ],
-  },
-  'third_party/node/mac_arm64': {
-      'dep_type': 'gcs',
-      'condition': 'host_os == "mac"',
-      'bucket': 'chromium-nodejs',
-      'objects': [
-          {
-              'object_name': '0886aa6a146cb5c213cb09b59ed1075982e4cb57',
-              'sha256sum': 'd39e2d44d58bb89740b9aca1073959fc92edbdbbe810a5e48448e331cf72c196',
-              'size_bytes': 44929037,
-              'generation': 1730835518292126,
-              'output_file': 'node-darwin-arm64.tar.gz',
-          },
-      ],
-  },
-  'third_party/node/win': {
-      'dep_type': 'gcs',
-      'condition': 'host_os == "win"',
-      'bucket': 'chromium-nodejs',
-      'objects': [
-          {
-              'object_name': '907d7e104e7389dc74cec7d32527c1db704b7f96',
-              'sha256sum': '7447c4ece014aa41fb2ff866c993c708e5a8213a00913cc2ac5049ea3ffc230d',
-              'size_bytes': 80511640,
-              'generation': 1730835526374028,
-              'output_file': 'node.exe',
-          },
-      ],
+  'third_party/node': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/nodejs/${{platform}}',
+        # `3` is the 3pp CIPD package epoch (not part of the Node.js version).
+        'version': 'version:3@{nodejs_version}',
+      },
+    ],
+    'dep_type': 'cipd',
+    'condition': 'not build_with_chromium',
   },
   'third_party/tsproxy': Var('chromium_tsproxy_git') + '@' + Var('tsproxy_revision'),
   'third_party/speedometer/v3.1': {

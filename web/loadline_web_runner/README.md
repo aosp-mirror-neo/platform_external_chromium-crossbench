@@ -58,8 +58,15 @@ several browser-native technologies:
 ## Development & Testing
 
 ### Prerequisites
-- **Node.js** (v20+ recommended) and **npm**
-- Full Crossbench checkout with dependencies (including `vpython3`)
+
+- Full Crossbench checkout synced via `gclient sync` (provides `vpython3` and
+  the pinned **Node.js** / **npm** toolchain under `third_party/node/`).
+- Prepend `third_party/node/bin` (`third_party/node` on Windows) to `PATH`
+  before running `node` / `npm` / `npx` manually so you use the same Node.js
+  version as CQ (instead of a system `node`):
+  ```bash
+  export PATH="$PWD/third_party/node/bin:$PATH"
+  ```
 
 ### Installation
 ```bash
