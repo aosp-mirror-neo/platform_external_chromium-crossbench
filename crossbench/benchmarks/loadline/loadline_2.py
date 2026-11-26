@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 # We should increase the minor version number every time there are any changes
 # that might affect the benchmark score.
-VERSION_STRING: Final[str] = "2.8.0"
+VERSION_STRING: Final[str] = "2.9.0"
 
 
 class MetricStats(TypedDict):
@@ -338,6 +338,11 @@ class LoadLine2Benchmark(LoadLineBenchmark):
       # allows Chrome on Android to intercept URLs (e.g. Google Docs) and
       # launch external intent handlers instead of loading them in the tab.
       chrome_flags.set("--disable-external-intent-requests")
+      # Background optimization guide model downloads can trigger mid-run and
+      # interfere with page loads.
+      chrome_flags.set(
+        "--disable-optimization-guide-model-downloads-for-benchmarking"
+      )
       # Additional flags that make Chrome behavior more deterministic, at the
       # expense of making it less representative of real-world usage.
       if cls.DETERMINISTIC:
