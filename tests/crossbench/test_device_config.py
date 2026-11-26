@@ -607,9 +607,10 @@ class DeviceConfigTestCase(unittest.TestCase):
     self.assertEqual(platform.device_config(), {})
 
   def test_android_device_config_parsing(self):
-    """Verify parsing of Android device_config, getprop, and settings."""
+    """Verify parsing of Android device config sections."""
     platform, mock_adb = self._create_mock_android_platform()
     mock_adb.shell_stdout.side_effect = [
+      "Night mode: no\n",
       (
         "accessibility/font_scale=1.0\n"
         "accessibility/color_inversion=0\n"
@@ -645,6 +646,11 @@ class DeviceConfigTestCase(unittest.TestCase):
       config,
       {
         "android": {
+          "cmd": {
+            "uimode": {
+              "night": "no",
+            },
+          },
           "device_config": {
             "accessibility/font_scale": "1.0",
             "accessibility/color_inversion": "0",
@@ -675,6 +681,7 @@ class DeviceConfigTestCase(unittest.TestCase):
     )
     mock_adb.shell_stdout.assert_has_calls(
       [
+        mock.call("cmd", "uimode", "night"),
         mock.call("cmd", "device_config", "list"),
         mock.call("getprop"),
         mock.call("settings", "list", "global"),
@@ -682,7 +689,7 @@ class DeviceConfigTestCase(unittest.TestCase):
         mock.call("settings", "list", "system"),
       ]
     )
-    self.assertEqual(mock_adb.shell_stdout.call_count, 5)
+    self.assertEqual(mock_adb.shell_stdout.call_count, 6)
 
   def _read_android_device_config(self, *shell_outputs: str) -> DeviceConfigMap:
     """Reads Android device_config with mocked shell outputs and empty base."""
@@ -691,6 +698,17 @@ class DeviceConfigTestCase(unittest.TestCase):
     # the three settings namespaces (global, secure, system).
     mock_adb.shell_stdout.side_effect = [*shell_outputs, "", "", "", "", ""]
     return platform.device_config()["android"]
+
+  def test_android_cmd_uimode_night_parsing(self):
+    """Verify uimode.night reads night mode values."""
+    for output, expected in (
+      ("Night mode: yes\n", {"night": "yes"}),
+      ("Night mode: custom_schedule\n", {"night": "custom_schedule"}),
+    ):
+      with self.subTest(output=output):
+        android_config = self._read_android_device_config(output)
+
+        self.assertEqual(android_config["cmd"], {"uimode": expected})
 
   @mock.patch.object(android_adb, "_SHELL_SETTINGS", _MOCK_SHELL_SETTINGS)
   def test_android_shell_settings_parsing(self):
@@ -1517,6 +1535,14 @@ class AndroidDeviceConfigWriterTestCase(unittest.TestCase):
         self.set_value(("cmd", "svc", "opt"), value)
 
     self.adb.shell.assert_not_called()
+
+  def test_set_cmd_uimode_night(self):
+    """Verify cmd.uimode.night is written with 'cmd uimode night'."""
+    self.set_value(("cmd", "uimode", "night"), "yes")
+
+    self.adb.shell.assert_called_once_with(
+      "cmd", "uimode", "night", "yes", capture_output=True
+    )
 
   def test_set_propagates_adb_errors(self):
     """Verify adb command failures propagate as SubprocessError."""

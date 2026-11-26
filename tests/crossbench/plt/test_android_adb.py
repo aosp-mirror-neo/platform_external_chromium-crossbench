@@ -885,6 +885,7 @@ class AndroidAdbMockPlatformTest(BaseAndroidAdbMockPlatformTestCase):
     self.assertIs(self.platform.adb, self.adb)
 
   def test_device_config(self):
+    self.expect_sh("cmd uimode night", result="Night mode: no\n")
     self.expect_sh(
       "cmd device_config list",
       result="accessibility/font_scale=1.0\ntop_level=true",
@@ -909,6 +910,11 @@ class AndroidAdbMockPlatformTest(BaseAndroidAdbMockPlatformTestCase):
       self.platform.device_config(),
       {
         "android": {
+          "cmd": {
+            "uimode": {
+              "night": "no",
+            },
+          },
           "device_config": {
             "accessibility/font_scale": "1.0",
             "top_level": "true",

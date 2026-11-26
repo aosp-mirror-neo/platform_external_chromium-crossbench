@@ -128,8 +128,14 @@
         1
       ]
     }
-    // TODO: Add support in AndroidAdbPlatform.device_config() for querying
-    // services via 'cmd <service>'. Use it to validate night mode.
-    "cmd": {}
+    "cmd": {
+      "uimode": {
+        // Enables Dark theme (night mode) to match the recorded WPR archives
+        // and keep theme-dependent page behavior and OLED power draw
+        // consistent across devices.
+        // Values: "no", "yes", "auto", "custom_schedule", "custom_bedtime".
+        "night": "yes"
+      }
+    }
   }
 }

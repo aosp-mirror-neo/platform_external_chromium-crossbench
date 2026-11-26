@@ -1020,7 +1020,16 @@ class _ShellSetting:
 # Ad-hoc adb shell settings keyed by their device_config path under "android"
 # (e.g., ("cmd", "uimode", "night") or ("wm", "user-rotation")).
 _SHELL_SETTINGS: Final[Mapping[DeviceConfigKeyPath, _ShellSetting]] = (
-  immutabledict()
+  immutabledict(
+    {
+      # The dark theme: "yes", "no", or a schedule such as "auto".
+      ("cmd", "uimode", "night"): _ShellSetting(
+        get_args=("cmd", "uimode", "night"),
+        set_args=("cmd", "uimode", "night"),
+        pattern=re.compile(r"Night mode: (?P<value>\w+)"),
+      ),
+    }
+  )
 )
 
 

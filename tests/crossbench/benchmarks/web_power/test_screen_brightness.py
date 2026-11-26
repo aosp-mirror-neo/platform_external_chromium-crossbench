@@ -103,6 +103,9 @@ class WebPowerScreenBrightnessSetupTestCase(CrossbenchFakeFsTestCase):
     )
     self.android_platform.use_mock_name = False
     self.android_platform.device_config_data = {
+      "cmd": {
+        "uimode": {},
+      },
       "settings": {
         "secure": {},
         "global": {},
