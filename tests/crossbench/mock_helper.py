@@ -51,7 +51,12 @@ from crossbench.plt.port_manager import LocalPortManager, PortManager
 from crossbench.plt.process_meminfo import ProcessMeminfo
 from crossbench.plt.pyodide import PyodidePlatform
 from crossbench.plt.win import WinPlatform
-from crossbench.plt.win_input import Input, VirtualScreen, Win32InputApi
+from crossbench.plt.win_input import (
+  Input,
+  PointerTypeInfo,
+  VirtualScreen,
+  Win32InputApi,
+)
 from crossbench.stories.story import Story
 
 if TYPE_CHECKING:
@@ -716,6 +721,8 @@ class MockWin32InputApi(Win32InputApi):
 
   def __init__(self) -> None:
     self.inputs: Final[list[Input]] = []
+    self.touch_devices: Final[list[int]] = []
+    self.touch_frames: Final[list[Sequence[PointerTypeInfo]]] = []
 
   @override
   def send_input(self, inputs: Sequence[Input]) -> None:
@@ -724,6 +731,23 @@ class MockWin32InputApi(Win32InputApi):
   @override
   def virtual_screen(self) -> VirtualScreen:
     return VirtualScreen(left=0, top=0, width=1920, height=1080)
+
+  @override
+  def create_touch_device(self, max_contacts: int) -> int:
+    del max_contacts
+    self.touch_devices.append(len(self.touch_devices) + 1)
+    return self.touch_devices[-1]
+
+  @override
+  def inject_touch(
+    self, device: int, contacts: Sequence[PointerTypeInfo]
+  ) -> None:
+    del device
+    self.touch_frames.append(tuple(contacts))
+
+  @override
+  def destroy_touch_device(self, device: int) -> None:
+    del device
 
 
 class WinMockPlatformMixin(MockPlatformMixin):

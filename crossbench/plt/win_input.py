@@ -7,6 +7,8 @@ Translates crossbench InputEvents into native Windows input:
 - KeyEvent:         SendInput() keyboard input (physical scan code).
 - MouseMoveEvent /
   MouseButtonEvent: SendInput() absolute mouse input.
+- TouchEvent:       InjectSyntheticPointerInput() on a synthetic PT_TOUCH
+                    pointer device (Windows 10 1809+).
 
 Unlike JS-dispatched events, these go through the regular OS input pipeline,
 so the browser records them like real user input (e.g. EventLatency metrics).
@@ -25,6 +27,7 @@ import abc
 import contextlib
 import ctypes
 import dataclasses
+import datetime as dt
 import logging
 import sys
 import time
@@ -49,6 +52,7 @@ from crossbench.action_runner.input_events import (
   KeyEvent,
   MouseButtonEvent,
   MouseMoveEvent,
+  TouchEvent,
   WaitEvent,
 )
 from crossbench.action_runner.virtual_device.all import DEFAULT_VIRTUAL_DEVICES
@@ -61,6 +65,7 @@ if TYPE_CHECKING:
   from crossbench.action_runner.virtual_device.virtual_device_config import (
     VirtualDeviceConfig,
   )
+  from crossbench.benchmarks.loading.point import Point
 
 # Fixed-width aliases for Win32 types, so that the structure layouts below are
 # identical on every host (c_ulong is 8 bytes on 64-bit posix, but DWORD is
@@ -68,11 +73,23 @@ if TYPE_CHECKING:
 DWORD: Final = ctypes.c_uint32
 WORD: Final = ctypes.c_uint16
 LONG: Final = ctypes.c_int32
+UINT32: Final = ctypes.c_uint32
+INT32: Final = ctypes.c_int32
+UINT64: Final = ctypes.c_uint64
 ULONG_PTR: Final = ctypes.c_size_t
 HANDLE: Final = ctypes.c_void_p
 
 # The structures below mirror the Win32 SDK structures of the same name
-# (MOUSEINPUT, KEYBDINPUT, HARDWAREINPUT, and INPUT).
+# (POINT, RECT, MOUSEINPUT, KEYBDINPUT, HARDWAREINPUT, INPUT, POINTER_INFO,
+# POINTER_TOUCH_INFO and POINTER_TYPE_INFO).
+
+
+class Win32Point(ctypes.Structure):
+  _fields_ = [("x", LONG), ("y", LONG)]
+
+
+class Win32Rect(ctypes.Structure):
+  _fields_ = [("left", LONG), ("top", LONG), ("right", LONG), ("bottom", LONG)]
 
 
 class MouseInput(ctypes.Structure):
@@ -108,6 +125,49 @@ class Input(ctypes.Structure):
   _fields_ = [("type", DWORD), ("u", _InputUnion)]
 
 
+class PointerInfo(ctypes.Structure):
+  _fields_ = [
+    ("pointerType", DWORD),
+    ("pointerId", UINT32),
+    ("frameId", UINT32),
+    ("pointerFlags", UINT32),
+    ("sourceDevice", HANDLE),
+    ("hwndTarget", HANDLE),
+    ("ptPixelLocation", Win32Point),
+    ("ptHimetricLocation", Win32Point),
+    ("ptPixelLocationRaw", Win32Point),
+    ("ptHimetricLocationRaw", Win32Point),
+    ("dwTime", DWORD),
+    ("historyCount", UINT32),
+    ("InputData", INT32),
+    ("dwKeyStates", DWORD),
+    ("PerformanceCount", UINT64),
+    ("ButtonChangeType", INT32),
+  ]
+
+
+class PointerTouchInfo(ctypes.Structure):
+  _fields_ = [
+    ("pointerInfo", PointerInfo),
+    ("touchFlags", UINT32),
+    ("touchMask", UINT32),
+    ("rcContact", Win32Rect),
+    ("rcContactRaw", Win32Rect),
+    ("orientation", UINT32),
+    ("pressure", UINT32),
+  ]
+
+
+class _PointerTypeInfoUnion(ctypes.Union):
+  # POINTER_PEN_INFO is smaller than PointerTouchInfo, so the union size is
+  # determined by the touch member alone.
+  _fields_ = [("touchInfo", PointerTouchInfo)]
+
+
+class PointerTypeInfo(ctypes.Structure):
+  _fields_ = [("type", DWORD), ("u", _PointerTypeInfoUnion)]
+
+
 INPUT_MOUSE: Final[int] = 0
 INPUT_KEYBOARD: Final[int] = 1
 
@@ -126,6 +186,38 @@ MOUSEEVENTF_VIRTUALDESK: Final[int] = 0x4000
 MOUSEEVENTF_ABSOLUTE: Final[int] = 0x8000
 # SendInput() maps absolute coordinates in [0, 65536) onto the virtual desktop.
 MOUSE_ABSOLUTE_SPAN: Final[int] = 65536
+
+PT_TOUCH: Final[int] = 2
+# No touch rings or trails: DWM rendering them adds compositor work during
+# latency measurements and shows up in screenshots.
+POINTER_FEEDBACK_NONE: Final[int] = 3
+POINTER_FLAG_INRANGE: Final[int] = 0x00000002
+POINTER_FLAG_INCONTACT: Final[int] = 0x00000004
+POINTER_FLAG_DOWN: Final[int] = 0x00010000
+POINTER_FLAG_UPDATE: Final[int] = 0x00020000
+POINTER_FLAG_UP: Final[int] = 0x00040000
+POINTER_FLAG_TOUCH_DOWN: Final[int] = (
+  POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+)
+POINTER_FLAG_TOUCH_UPDATE: Final[int] = (
+  POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+)
+TOUCH_MASK_CONTACTAREA: Final[int] = 0x00000001
+TOUCH_MASK_ORIENTATION: Final[int] = 0x00000002
+TOUCH_MASK_PRESSURE: Final[int] = 0x00000004
+
+# Synthetic touch contact parameters (pressure range is [0, 1024]).
+TOUCH_CONTACT_RADIUS: Final[int] = 2
+TOUCH_PRESSURE: Final[int] = 512
+TOUCH_ORIENTATION: Final[int] = 90
+# Maximum number of simultaneous contacts of the synthetic touch device.
+MAX_TOUCH_CONTACTS: Final[int] = 10
+# InjectSyntheticPointerInput() assigns timestamps itself and fails with
+# ERROR_NOT_READY when frames are injected less than ~0.1ms apart.
+MIN_TOUCH_FRAME_INTERVAL: Final[dt.timedelta] = dt.timedelta(milliseconds=1)
+# Windows cancels touch contacts that receive no update for about a second,
+# keep held contacts alive like Chromium (remoting/host/touch_injector_win.cc).
+TOUCH_KEEPALIVE_INTERVAL: Final[dt.timedelta] = dt.timedelta(milliseconds=100)
 
 SM_XVIRTUALSCREEN: Final[int] = 76
 SM_YVIRTUALSCREEN: Final[int] = 77
@@ -222,6 +314,20 @@ class Win32InputApi(abc.ABC):
   def virtual_screen(self) -> VirtualScreen:
     pass
 
+  @abc.abstractmethod
+  def create_touch_device(self, max_contacts: int) -> int:
+    pass
+
+  @abc.abstractmethod
+  def inject_touch(
+    self, device: int, contacts: Sequence[PointerTypeInfo]
+  ) -> None:
+    pass
+
+  @abc.abstractmethod
+  def destroy_touch_device(self, device: int) -> None:
+    pass
+
 
 class CtypesWin32InputApi(Win32InputApi):
   """Win32InputApi implementation calling user32.dll through ctypes."""
@@ -247,6 +353,20 @@ class CtypesWin32InputApi(Win32InputApi):
     user32.GetSystemMetrics.restype = ctypes.c_int
     user32.SetThreadDpiAwarenessContext.argtypes = [HANDLE]
     user32.SetThreadDpiAwarenessContext.restype = HANDLE
+    user32.CreateSyntheticPointerDevice.argtypes = [
+      DWORD,
+      UINT32,
+      DWORD,
+    ]
+    user32.CreateSyntheticPointerDevice.restype = HANDLE
+    user32.InjectSyntheticPointerInput.argtypes = [
+      HANDLE,
+      ctypes.POINTER(PointerTypeInfo),
+      UINT32,
+    ]
+    user32.InjectSyntheticPointerInput.restype = ctypes.c_int
+    user32.DestroySyntheticPointerDevice.argtypes = [HANDLE]
+    user32.DestroySyntheticPointerDevice.restype = None
 
   def _raise_last_error(self, function: str, details: str = "") -> NoReturn:
     if sys.platform == "win32":
@@ -299,11 +419,39 @@ class CtypesWin32InputApi(Win32InputApi):
         height=metrics(SM_CYVIRTUALSCREEN),
       )
 
+  @override
+  def create_touch_device(self, max_contacts: int) -> int:
+    device = self._user32.CreateSyntheticPointerDevice(
+      PT_TOUCH, max_contacts, POINTER_FEEDBACK_NONE
+    )
+    if not device:
+      self._raise_last_error("CreateSyntheticPointerDevice")
+    return device
+
+  @override
+  def inject_touch(
+    self, device: int, contacts: Sequence[PointerTypeInfo]
+  ) -> None:
+    array = (PointerTypeInfo * len(contacts))(*contacts)
+    if not self._user32.InjectSyntheticPointerInput(
+      device, array, len(contacts)
+    ):
+      self._raise_last_error("InjectSyntheticPointerInput")
+
+  @override
+  def destroy_touch_device(self, device: int) -> None:
+    self._user32.DestroySyntheticPointerDevice(device)
+
 
 @dataclasses.dataclass
 class _WinVirtualDevice:
   name: str
   device_type: VirtualDeviceType
+  touch_device: int | None = None
+  # Active touch contacts by slot (only used for touchscreens).
+  contacts: dict[int, Point] = dataclasses.field(default_factory=dict)
+  # Monotonic time of the last injected touch frame.
+  last_touch_frame: float | None = None
 
 
 class WinInputInjector:
@@ -319,6 +467,7 @@ class WinInputInjector:
       KeyEvent: VirtualDeviceType.KEYBOARD,
       MouseMoveEvent: VirtualDeviceType.MOUSE,
       MouseButtonEvent: VirtualDeviceType.MOUSE,
+      TouchEvent: VirtualDeviceType.TOUCHSCREEN,
     }
   )
 
@@ -347,6 +496,9 @@ class WinInputInjector:
       self._init_device(device_config.name, device_config.device_type)
 
   def teardown_virtual_devices(self) -> None:
+    for device in self._devices.values():
+      if touch_device := device.touch_device:
+        self._api.destroy_touch_device(touch_device)
     self._devices.clear()
 
   def _init_device(
@@ -354,9 +506,17 @@ class WinInputInjector:
   ) -> _WinVirtualDevice:
     if device := self._devices.get(name):
       return device
-    if device_type not in (VirtualDeviceType.KEYBOARD, VirtualDeviceType.MOUSE):
+    touch_device: int | None = None
+    if device_type == VirtualDeviceType.TOUCHSCREEN:
+      touch_device = self._api.create_touch_device(MAX_TOUCH_CONTACTS)
+    elif device_type not in (
+      VirtualDeviceType.KEYBOARD,
+      VirtualDeviceType.MOUSE,
+    ):
       raise ValueError(f"Unsupported virtual device type: {device_type}")
-    device = _WinVirtualDevice(name=name, device_type=device_type)
+    device = _WinVirtualDevice(
+      name=name, device_type=device_type, touch_device=touch_device
+    )
     logging.debug(
       "Initialized Windows virtual %s '%s'", device_type.value, name
     )
@@ -388,25 +548,65 @@ class WinInputInjector:
     Blocks until all events have been injected plus a short drain buffer.
     """
     device = self._get_device(device_name)
+    try:
+      injected = self._inject_events(device, events)
+    finally:
+      self._release_touch_contacts(device)
+    if injected:
+      self._sleep(INPUT_DRAIN_BUFFER.total_seconds())
+
+  def _inject_events(
+    self, device: _WinVirtualDevice, events: Iterable[InputEvent]
+  ) -> bool:
     deadline = self._monotonic()
     injected = False
     for event in events:
       if isinstance(event, WaitEvent):
         deadline += event.duration.total_seconds()
         continue
-      self._wait_until(deadline)
+      self._wait_until(deadline, device)
       self._inject_event(device, event)
       injected = True
-    self._wait_until(deadline)
-    if injected:
-      self._sleep(INPUT_DRAIN_BUFFER.total_seconds())
+    self._wait_until(deadline, device)
+    return injected
 
-  def _wait_until(self, deadline: float) -> None:
+  def _wait_until(self, deadline: float, device: _WinVirtualDevice) -> None:
     # Sleep against an absolute deadline so that per-event injection costs do
     # not accumulate as timing drift over long event sequences.
-    remaining = deadline - self._monotonic()
-    if remaining > 0:
-      self._sleep(remaining)
+    while (remaining := deadline - self._monotonic()) > 0:
+      if not device.contacts:
+        self._sleep(remaining)
+        return
+      keepalive = TOUCH_KEEPALIVE_INTERVAL.total_seconds()
+      if remaining <= keepalive:
+        self._sleep(remaining)
+        return
+      self._sleep(keepalive)
+      self._inject_touch_frame(device, self._touch_update_frame(device))
+
+  def _release_touch_contacts(self, device: _WinVirtualDevice) -> None:
+    """Lifts contacts that are still held after a sequence or an error.
+
+    Contacts are not kept alive between sequences, Windows would cancel them,
+    and leftover contacts would turn later taps into moves.
+    """
+    if not device.contacts:
+      return
+    logging.warning(
+      "Releasing touch contacts %s still held on '%s'.",
+      sorted(device.contacts),
+      device.name,
+    )
+    frame = [
+      self._touch_contact(slot, position, POINTER_FLAG_UP)
+      for slot, position in sorted(device.contacts.items())
+    ]
+    try:
+      self._inject_touch_frame(device, frame)
+    except (OSError, RuntimeError) as e:
+      logging.warning("Could not release touch contacts: %s", e)
+    finally:
+      device.contacts.clear()
 
   def _inject_event(self, device: _WinVirtualDevice, event: InputEvent) -> None:
     self._check_device_type(device, event)
@@ -417,6 +617,8 @@ class WinInputInjector:
         self._inject_mouse_move(event)
       case MouseButtonEvent():
         self._inject_mouse_button(event)
+      case TouchEvent():
+        self._inject_touch(device, event)
       case _:
         raise ValueError(f"Unsupported event type: {type(event).__name__}")
 
@@ -488,3 +690,105 @@ class WinInputInjector:
       dwFlags=down_flag if event.is_down else up_flag
     )
     self._api.send_input((mouse_input,))
+
+  def _inject_touch(self, device: _WinVirtualDevice, event: TouchEvent) -> None:
+    if not 0 <= event.slot < MAX_TOUCH_CONTACTS:
+      raise ValueError(
+        f"Touch slot {event.slot} is outside of [0, {MAX_TOUCH_CONTACTS - 1}]"
+      )
+    if event.is_down:
+      self._touch_down_or_move(device, event)
+    else:
+      self._touch_up(device, event)
+
+  def _touch_down_or_move(
+    self, device: _WinVirtualDevice, event: TouchEvent
+  ) -> None:
+    contacts = dict(device.contacts)
+    is_new = event.slot not in contacts
+    contacts[event.slot] = event.position
+    if is_new:
+      changed_flags = POINTER_FLAG_TOUCH_DOWN
+    else:
+      changed_flags = POINTER_FLAG_TOUCH_UPDATE
+    frame = [
+      self._touch_contact(
+        slot,
+        position,
+        changed_flags if slot == event.slot else POINTER_FLAG_TOUCH_UPDATE,
+      )
+      for slot, position in sorted(contacts.items())
+    ]
+    self._inject_touch_frame(device, frame)
+    # Only commit the new state once Windows accepted the frame.
+    device.contacts[event.slot] = event.position
+
+  def _touch_up(self, device: _WinVirtualDevice, event: TouchEvent) -> None:
+    if event.slot not in device.contacts:
+      raise ValueError(f"Touch slot {event.slot} released but not down.")
+    if device.contacts[event.slot] != event.position:
+      # The UP frame must be at the contact's last position: move it first.
+      self._touch_down_or_move(device, dataclasses.replace(event, is_down=True))
+    others = sorted(
+      (slot, pos) for slot, pos in device.contacts.items() if slot != event.slot
+    )
+    frame = [self._touch_contact(event.slot, event.position, POINTER_FLAG_UP)]
+    frame.extend(
+      self._touch_contact(slot, pos, POINTER_FLAG_TOUCH_UPDATE)
+      for slot, pos in others
+    )
+    self._inject_touch_frame(device, frame)
+    del device.contacts[event.slot]
+
+  def _touch_update_frame(
+    self, device: _WinVirtualDevice
+  ) -> list[PointerTypeInfo]:
+    return [
+      self._touch_contact(slot, position, POINTER_FLAG_TOUCH_UPDATE)
+      for slot, position in sorted(device.contacts.items())
+    ]
+
+  def _inject_touch_frame(
+    self, device: _WinVirtualDevice, frame: Sequence[PointerTypeInfo]
+  ) -> None:
+    if not device.touch_device:
+      raise ValueError(f"Device '{device.name}' has no synthetic touch device")
+    if device.last_touch_frame is not None:
+      self._wait_until_time(
+        device.last_touch_frame + MIN_TOUCH_FRAME_INTERVAL.total_seconds()
+      )
+    self._api.inject_touch(device.touch_device, frame)
+    device.last_touch_frame = self._monotonic()
+
+  def _wait_until_time(self, deadline: float) -> None:
+    if (remaining := deadline - self._monotonic()) > 0:
+      self._sleep(remaining)
+
+  def _touch_contact(
+    self, slot: int, position: Point, flags: int
+  ) -> PointerTypeInfo:
+    # Windows rejects contacts whose point or area leaves the virtual desktop.
+    screen = self._virtual_screen()
+    right = screen.left + screen.width - 1
+    bottom = screen.top + screen.height - 1
+    x = max(screen.left, min(right, position.x))
+    y = max(screen.top, min(bottom, position.y))
+    contact = PointerTypeInfo(type=PT_TOUCH)
+    touch = contact.u.touchInfo
+    touch.pointerInfo.pointerType = PT_TOUCH
+    touch.pointerInfo.pointerId = slot
+    touch.pointerInfo.pointerFlags = flags
+    touch.pointerInfo.ptPixelLocation = Win32Point(x, y)
+    touch.touchMask = (
+      TOUCH_MASK_CONTACTAREA | TOUCH_MASK_ORIENTATION | TOUCH_MASK_PRESSURE
+    )
+    touch.rcContact = Win32Rect(
+      max(screen.left, x - TOUCH_CONTACT_RADIUS),
+      max(screen.top, y - TOUCH_CONTACT_RADIUS),
+      min(right, x + TOUCH_CONTACT_RADIUS),
+      min(bottom, y + TOUCH_CONTACT_RADIUS),
+    )
+    touch.orientation = TOUCH_ORIENTATION
+    # W3C PointerEvent.pressure is 0 once the contact is lifted.
+    touch.pressure = 0 if flags == POINTER_FLAG_UP else TOUCH_PRESSURE
+    return contact

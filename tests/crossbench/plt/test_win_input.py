@@ -37,6 +37,7 @@ from crossbench.plt.win_input import (
   KEYEVENTF_EXTENDEDKEY,
   KEYEVENTF_KEYUP,
   KEYEVENTF_SCANCODE,
+  MAX_TOUCH_CONTACTS,
   MOUSE_ABSOLUTE_SPAN,
   MOUSEEVENTF_ABSOLUTE,
   MOUSEEVENTF_LEFTDOWN,
@@ -45,14 +46,27 @@ from crossbench.plt.win_input import (
   MOUSEEVENTF_MOVE,
   MOUSEEVENTF_RIGHTUP,
   MOUSEEVENTF_VIRTUALDESK,
+  POINTER_FEEDBACK_NONE,
+  POINTER_FLAG_TOUCH_DOWN,
+  POINTER_FLAG_TOUCH_UPDATE,
+  POINTER_FLAG_UP,
+  PT_TOUCH,
   SM_CXVIRTUALSCREEN,
   SM_CYVIRTUALSCREEN,
   SM_XVIRTUALSCREEN,
   SM_YVIRTUALSCREEN,
+  TOUCH_KEEPALIVE_INTERVAL,
+  TOUCH_MASK_CONTACTAREA,
+  TOUCH_MASK_ORIENTATION,
+  TOUCH_MASK_PRESSURE,
+  UINT32,
   W3C_TO_WIN_SCAN_CODE,
   CtypesWin32InputApi,
   Input,
   KeybdInput,
+  PointerInfo,
+  PointerTouchInfo,
+  PointerTypeInfo,
   VirtualScreen,
   Win32InputApi,
   WinInputInjector,
@@ -75,6 +89,14 @@ class RecordedMouse:
   flags: int
 
 
+@dataclasses.dataclass(frozen=True)
+class RecordedTouch:
+  pointer_id: int
+  flags: int
+  x: int
+  y: int
+
+
 class FakeWin32InputApi(Win32InputApi):
   """Records the native input that would be injected."""
 
@@ -83,6 +105,11 @@ class FakeWin32InputApi(Win32InputApi):
   ) -> None:
     self.screen: VirtualScreen = screen
     self.inputs: Final[list[RecordedKey | RecordedMouse]] = []
+    self.touch_frames: Final[list[tuple[RecordedTouch, ...]]] = []
+    self.created_devices: Final[list[int]] = []
+    self.destroyed_devices: Final[list[int]] = []
+    # Last position of every active contact, by (device, pointer id).
+    self.contact_positions: Final[dict[tuple[int, int], tuple[int, int]]] = {}
 
   @override
   def send_input(self, inputs: Sequence[Input]) -> None:
@@ -98,6 +125,68 @@ class FakeWin32InputApi(Win32InputApi):
   @override
   def virtual_screen(self) -> VirtualScreen:
     return self.screen
+
+  @override
+  def create_touch_device(self, max_contacts: int) -> int:
+    assert max_contacts == MAX_TOUCH_CONTACTS
+    device = 100 + len(self.created_devices)
+    self.created_devices.append(device)
+    return device
+
+  @override
+  def inject_touch(
+    self, device: int, contacts: Sequence[PointerTypeInfo]
+  ) -> None:
+    assert device in self.created_devices
+    assert device not in self.destroyed_devices
+    frame: list[RecordedTouch] = []
+    for contact in contacts:
+      assert contact.type == PT_TOUCH
+      self._check_contact(device, contact.u.touchInfo)
+      info = contact.u.touchInfo.pointerInfo
+      frame.append(
+        RecordedTouch(
+          info.pointerId,
+          info.pointerFlags,
+          info.ptPixelLocation.x,
+          info.ptPixelLocation.y,
+        )
+      )
+    self.touch_frames.append(tuple(frame))
+
+  def _check_contact(self, device: int, touch: PointerTouchInfo) -> None:
+    """Rejects packets that InjectSyntheticPointerInput() would reject."""
+    info = touch.pointerInfo
+    assert info.pointerType == PT_TOUCH
+    point = (info.ptPixelLocation.x, info.ptPixelLocation.y)
+    screen = self.screen
+    right = screen.left + screen.width - 1
+    bottom = screen.top + screen.height - 1
+    assert screen.left <= point[0] <= right, point
+    assert screen.top <= point[1] <= bottom, point
+    assert touch.touchMask == (
+      TOUCH_MASK_CONTACTAREA | TOUCH_MASK_ORIENTATION | TOUCH_MASK_PRESSURE
+    )
+    rect = touch.rcContact
+    assert screen.left <= rect.left <= point[0] <= rect.right <= right
+    assert screen.top <= rect.top <= point[1] <= rect.bottom <= bottom
+    assert 0 <= touch.orientation < 360
+    key = (device, info.pointerId)
+    if info.pointerFlags == POINTER_FLAG_UP:
+      assert touch.pressure == 0
+      # UP must be at the contact's last position.
+      assert self.contact_positions.pop(key) == point
+      return
+    assert 0 < touch.pressure <= 1024
+    if info.pointerFlags == POINTER_FLAG_TOUCH_DOWN:
+      assert key not in self.contact_positions
+    else:
+      assert key in self.contact_positions
+    self.contact_positions[key] = point
+
+  @override
+  def destroy_touch_device(self, device: int) -> None:
+    self.destroyed_devices.append(device)
 
 
 class FakeClock:
@@ -126,23 +215,25 @@ class WinInputInjectorTestCase(unittest.TestCase):
       (
         KeyboardVirtualDeviceConfig(name="keyboard"),
         MouseVirtualDeviceConfig(name="mouse"),
+        TouchscreenVirtualDeviceConfig(name="touch"),
       )
     )
+
+  def test_setup_creates_touch_device_only(self):
+    self.assertListEqual(self.api.created_devices, [100])
 
   def test_setup_is_idempotent(self):
     self.injector.setup_virtual_devices(
-      (KeyboardVirtualDeviceConfig(name="keyboard"),)
+      (TouchscreenVirtualDeviceConfig(name="touch"),)
     )
+    self.assertListEqual(self.api.created_devices, [100])
+
+  def test_teardown_destroys_touch_device(self):
     self.injector.teardown_virtual_devices()
+    self.assertListEqual(self.api.destroyed_devices, [100])
     with self.assertRaisesRegex(RuntimeError, "not initialized"):
       self.injector.inject_input_events(
-        "keyboard", (KeyEvent("KeyA", is_down=True),)
-      )
-
-  def test_unsupported_device_type(self):
-    with self.assertRaisesRegex(ValueError, "Unsupported virtual device"):
-      self.injector.setup_virtual_devices(
-        (TouchscreenVirtualDeviceConfig(name="touch"),)
+        "touch", (TouchEvent(Point(1, 1), is_down=True),)
       )
 
   def test_key(self):
@@ -313,11 +404,224 @@ class WinInputInjectorTestCase(unittest.TestCase):
       ],
     )
 
-  def test_unsupported_event_type(self):
-    with self.assertRaisesRegex(ValueError, "Unsupported event type"):
+  def test_touch_tap(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 20), is_down=True),
+        TouchEvent(Point(10, 20), is_down=False),
+      ),
+    )
+    self.assertListEqual(
+      self.api.touch_frames,
+      [
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_DOWN, 10, 20),),
+        (RecordedTouch(0, POINTER_FLAG_UP, 10, 20),),
+      ],
+    )
+
+  def test_touch_swipe(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 100), is_down=True),
+        TouchEvent(Point(10, 50), is_down=True),
+        TouchEvent(Point(10, 0), is_down=True),
+        TouchEvent(Point(10, 0), is_down=False),
+      ),
+    )
+    self.assertListEqual(
+      self.api.touch_frames,
+      [
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_DOWN, 10, 100),),
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 10, 50),),
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 10, 0),),
+        (RecordedTouch(0, POINTER_FLAG_UP, 10, 0),),
+      ],
+    )
+
+  def test_touch_multi_slot_frames(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 10), is_down=True, slot=0),
+        TouchEvent(Point(50, 50), is_down=True, slot=1),
+        TouchEvent(Point(20, 20), is_down=True, slot=0),
+        TouchEvent(Point(20, 20), is_down=False, slot=0),
+        TouchEvent(Point(50, 50), is_down=False, slot=1),
+      ),
+    )
+    # Every frame contains all active contacts.
+    self.assertListEqual(
+      self.api.touch_frames,
+      [
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_DOWN, 10, 10),),
+        (
+          RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 10, 10),
+          RecordedTouch(1, POINTER_FLAG_TOUCH_DOWN, 50, 50),
+        ),
+        (
+          RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 20, 20),
+          RecordedTouch(1, POINTER_FLAG_TOUCH_UPDATE, 50, 50),
+        ),
+        (
+          RecordedTouch(0, POINTER_FLAG_UP, 20, 20),
+          RecordedTouch(1, POINTER_FLAG_TOUCH_UPDATE, 50, 50),
+        ),
+        (RecordedTouch(1, POINTER_FLAG_UP, 50, 50),),
+      ],
+    )
+
+  def test_touch_release_without_down(self):
+    with self.assertRaisesRegex(ValueError, "released but not down"):
+      self.injector.inject_input_events(
+        "touch", (TouchEvent(Point(1, 1), is_down=False),)
+      )
+
+  def test_touch_slot_out_of_range(self):
+    # TouchEvent() itself already rejects negative slots.
+    event = TouchEvent(Point(1, 1), is_down=True, slot=MAX_TOUCH_CONTACTS)
+    with self.assertRaisesRegex(ValueError, f"slot {event.slot} is outside"):
+      self.injector.inject_input_events("touch", (event,))
+    self.assertListEqual(self.api.touch_frames, [])
+
+  def test_touch_on_keyboard_device(self):
+    with self.assertRaisesRegex(ValueError, "expected a touchscreen device"):
       self.injector.inject_input_events(
         "keyboard", (TouchEvent(Point(1, 1), is_down=True),)
       )
+
+  def test_touch_frames_are_spaced(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 20), is_down=True),
+        TouchEvent(Point(10, 20), is_down=False),
+      ),
+    )
+    # A tap without WaitEvent still leaves 1ms between the two frames.
+    self.assertAlmostEqual(self.clock.sleeps[0], 0.001)
+
+  def test_touch_keepalive_during_long_wait(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 20), is_down=True),
+        WaitEvent(dt.timedelta(milliseconds=350)),
+        TouchEvent(Point(10, 20), is_down=False),
+      ),
+    )
+    keepalive = (RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 10, 20),)
+    self.assertListEqual(
+      self.api.touch_frames,
+      [
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_DOWN, 10, 20),),
+        keepalive,
+        keepalive,
+        keepalive,
+        (RecordedTouch(0, POINTER_FLAG_UP, 10, 20),),
+      ],
+    )
+    self.assertAlmostEqual(
+      self.clock.sleeps[0], TOUCH_KEEPALIVE_INTERVAL.total_seconds()
+    )
+
+  def test_touch_no_keepalive_without_contacts(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 20), is_down=True),
+        TouchEvent(Point(10, 20), is_down=False),
+        WaitEvent(dt.timedelta(milliseconds=350)),
+      ),
+    )
+    self.assertEqual(len(self.api.touch_frames), 2)
+
+  def test_touch_release_moves_contact_first(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(10, 20), is_down=True),
+        TouchEvent(Point(30, 40), is_down=False),
+      ),
+    )
+    self.assertListEqual(
+      self.api.touch_frames,
+      [
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_DOWN, 10, 20),),
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 30, 40),),
+        (RecordedTouch(0, POINTER_FLAG_UP, 30, 40),),
+      ],
+    )
+
+  def test_touch_contacts_are_clamped_to_screen(self):
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(-5, 0), is_down=True),
+        TouchEvent(Point(5000, 5000), is_down=True),
+        TouchEvent(Point(5000, 5000), is_down=False),
+      ),
+    )
+    # The fake API validates that points and contact areas are on screen.
+    self.assertListEqual(
+      self.api.touch_frames,
+      [
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_DOWN, 0, 0),),
+        (RecordedTouch(0, POINTER_FLAG_TOUCH_UPDATE, 1920, 1080),),
+        (RecordedTouch(0, POINTER_FLAG_UP, 1920, 1080),),
+      ],
+    )
+
+  def test_touch_sequence_without_release(self):
+    with self.assertLogs(level="WARNING") as logs:
+      self.injector.inject_input_events(
+        "touch", (TouchEvent(Point(10, 20), is_down=True),)
+      )
+    self.assertIn("Releasing touch contacts [0]", logs.output[0])
+    self.assertTupleEqual(
+      self.api.touch_frames[-1], (RecordedTouch(0, POINTER_FLAG_UP, 10, 20),)
+    )
+    # The next tap starts a new contact instead of moving a phantom one.
+    self.injector.inject_input_events(
+      "touch",
+      (
+        TouchEvent(Point(1, 2), is_down=True),
+        TouchEvent(Point(1, 2), is_down=False),
+      ),
+    )
+    self.assertEqual(
+      self.api.touch_frames[-2][0].flags, POINTER_FLAG_TOUCH_DOWN
+    )
+
+  def test_touch_state_after_failed_frame(self):
+    original_inject_touch = self.api.inject_touch
+    calls = 0
+
+    def failing_inject_touch(device, contacts):
+      nonlocal calls
+      calls += 1
+      if calls == 2:
+        raise RuntimeError("InjectSyntheticPointerInput failed.")
+      original_inject_touch(device, contacts)
+
+    self.api.inject_touch = failing_inject_touch
+    with (
+      self.assertLogs(level="WARNING"),
+      self.assertRaisesRegex(RuntimeError, "InjectSyntheticPointerInput"),
+    ):
+      self.injector.inject_input_events(
+        "touch",
+        (
+          TouchEvent(Point(10, 20), is_down=True),
+          TouchEvent(Point(30, 40), is_down=True, slot=1),
+        ),
+      )
+    # Slot 1 was never committed; slot 0 was released after the error.
+    self.assertTupleEqual(
+      self.api.touch_frames[-1], (RecordedTouch(0, POINTER_FLAG_UP, 10, 20),)
+    )
+    self.assertDictEqual(self.api.contact_positions, {})
 
   def test_device_type_mismatch(self):
     with self.assertRaisesRegex(ValueError, "Cannot inject KeyEvent on mouse"):
@@ -335,10 +639,15 @@ class WinInputInjectorTestCase(unittest.TestCase):
   def test_lazy_default_device(self):
     with self.assertLogs(level="WARNING") as logs:
       self.injector.inject_input_events(
-        "default_keyboard", (KeyEvent("KeyA", is_down=True),)
+        "default_touchscreen",
+        (
+          TouchEvent(Point(1, 1), is_down=True),
+          TouchEvent(Point(1, 1), is_down=False),
+        ),
       )
     self.assertIn("Lazily initializing", logs.output[0])
-    self.assertEqual(len(self.api.inputs), 1)
+    self.assertListEqual(self.api.created_devices, [100, 101])
+    self.assertEqual(len(self.api.touch_frames), 2)
 
   def test_lazy_default_device_uses_setup_callback(self):
     setup_devices = mock.Mock()
@@ -415,8 +724,11 @@ class Win32StructTestCase(unittest.TestCase):
     ctypes.sizeof(ctypes.c_void_p) == 8, "Requires a 64-bit host"
   )
   def test_struct_sizes_64bit(self):
-    # Must match the Windows SDK x64/arm64 layout.
+    # Must match the Windows SDK x64/arm64 layouts.
     self.assertEqual(ctypes.sizeof(Input), 40)
+    self.assertEqual(ctypes.sizeof(PointerInfo), 96)
+    self.assertEqual(ctypes.sizeof(PointerTouchInfo), 144)
+    self.assertEqual(ctypes.sizeof(PointerTypeInfo), 152)
 
   @unittest.skipIf(sys.platform == "win32", "Requires a non-Windows host")
   def test_ctypes_api_requires_windows(self):
@@ -536,6 +848,42 @@ class CtypesWin32InputApiTestCase(unittest.TestCase):
     self.user32.GetSystemMetrics.side_effect = metrics.__getitem__
     self.assertEqual(api.virtual_screen(), VirtualScreen(-1920, 0, 3840, 1080))
 
+  def test_touch_device_lifecycle_and_inject(self):
+    api = CtypesWin32InputApi()
+    self.user32.CreateSyntheticPointerDevice.return_value = 42
+    handle = api.create_touch_device(MAX_TOUCH_CONTACTS)
+    self.assertEqual(handle, 42)
+    self.user32.CreateSyntheticPointerDevice.assert_called_once_with(
+      PT_TOUCH, MAX_TOUCH_CONTACTS, POINTER_FEEDBACK_NONE
+    )
+    # ULONG maxCount is 32-bit on Windows.
+    self.assertIs(self.user32.CreateSyntheticPointerDevice.argtypes[1], UINT32)
+
+    contact = PointerTypeInfo(type=PT_TOUCH)
+    self.user32.InjectSyntheticPointerInput.return_value = 1
+    api.inject_touch(handle, (contact,))
+    dev_arg, array_arg, count_arg = (
+      self.user32.InjectSyntheticPointerInput.call_args.args
+    )
+    self.assertEqual(dev_arg, 42)
+    self.assertEqual(count_arg, 1)
+    self.assertEqual(array_arg[0].type, PT_TOUCH)
+
+    self.user32.InjectSyntheticPointerInput.return_value = 0
+    with self.assertRaisesRegex(
+      RuntimeError, "InjectSyntheticPointerInput failed"
+    ):
+      api.inject_touch(handle, (contact,))
+
+    api.destroy_touch_device(handle)
+    self.user32.DestroySyntheticPointerDevice.assert_called_once_with(42)
+
+    self.user32.CreateSyntheticPointerDevice.return_value = 0
+    with self.assertRaisesRegex(
+      RuntimeError, "CreateSyntheticPointerDevice failed"
+    ):
+      api.create_touch_device(MAX_TOUCH_CONTACTS)
+
 
 class WinPlatformInputTestCase(unittest.TestCase):
   @override
@@ -560,17 +908,18 @@ class WinPlatformInputTestCase(unittest.TestCase):
 
   def test_inject_input_events(self):
     self.platform.setup_virtual_devices(
-      (KeyboardVirtualDeviceConfig(name="keyboard"),)
+      (TouchscreenVirtualDeviceConfig(name="touch"),)
     )
     self.platform.inject_input_events(
-      "keyboard",
+      "touch",
       (
-        KeyEvent("KeyA", is_down=True),
-        KeyEvent("KeyA", is_down=False),
+        TouchEvent(Point(3, 4), is_down=True),
+        TouchEvent(Point(3, 4), is_down=False),
       ),
     )
-    self.assertEqual(len(self.api.inputs), 2)
+    self.assertEqual(len(self.api.touch_frames), 2)
     self.platform.teardown_virtual_devices()
+    self.assertListEqual(self.api.destroyed_devices, [100])
     self.create_api.assert_called_once()
 
   def test_uses_platform_sleep(self):

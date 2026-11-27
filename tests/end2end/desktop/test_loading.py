@@ -54,7 +54,11 @@ class TestDesktopLoading:
     if platform.is_linux or platform.is_android or platform.is_chromeos:
       return True
     if platform.is_win:
-      return input_source in (InputSource.KEYBOARD, InputSource.MOUSE)
+      return input_source in (
+        InputSource.KEYBOARD,
+        InputSource.MOUSE,
+        InputSource.TOUCH,
+      )
     return False
 
   def focus_text_input_action(
