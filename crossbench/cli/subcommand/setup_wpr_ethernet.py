@@ -47,6 +47,7 @@ Keep this script running until the benchmark finishes executing. Then you can
 terminate it via Ctrl+C.
 """
 
+HOST_IP: Final[str] = "192.168.1.1"
 DEVICE_IP: Final[str] = "192.168.1.100"
 ADB_PORT: Final[str] = "5555"
 SETUP_TIMEOUT: Final[datetime.timedelta] = datetime.timedelta(seconds=20)
@@ -147,10 +148,11 @@ class SetupNetwork:
     self._check_port_available(443)
 
   def _check_port_available(self, port: int) -> None:
-    result = self._sh("sudo", "lsof", "+c0", f"-i:{port}")
+    result = self._sh("sudo", "lsof", "+c0", "-n", "-P", f"-i:{port}")
     lsof = result.stdout.decode("utf-8")
-    listeners = [line for line in lsof.splitlines() if "(LISTEN)" in line]
-    if len(listeners) > 0:
+    conflicts = (f" *:{port} (LISTEN)", f" {HOST_IP}:{port} (LISTEN)")
+    listeners = [line for line in lsof.splitlines() if line.endswith(conflicts)]
+    if listeners:
       self._fail(
         "Port %s is used by the following processes:\n%s",
         port,
@@ -168,7 +170,7 @@ class SetupNetwork:
       "sudo",
       "ifconfig",
       self._interface,
-      "192.168.1.1",
+      HOST_IP,
       "netmask",
       "255.255.255.0",
     )
@@ -177,10 +179,14 @@ class SetupNetwork:
       dnsmasq_bin,
       "--no-daemon",
       "--no-resolv",
+      "--leasefile-ro",
+      "--bind-interfaces",
       "--interface",
       self._interface,
+      "--except-interface",
+      "lo*",
       "--address",
-      "/#/192.168.1.1",
+      f"/#/{HOST_IP}",
       "--dhcp-range",
       f"{DEVICE_IP},{DEVICE_IP}",
       stdin=subprocess.DEVNULL,

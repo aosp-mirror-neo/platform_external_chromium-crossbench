@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import io
+import subprocess
 from typing import Final
 from unittest import mock
 
@@ -117,6 +118,36 @@ class SetupNetworkBinaryCheckTestCase(BaseCliTestCase):
     ):
       setup._setup()
     mock_check_device.assert_not_called()
+
+
+class SetupNetworkPortCheckTestCase(BaseCliTestCase):
+  def test_loopback_listener_is_ignored(self) -> None:
+    setup = SetupNetwork("en7")
+    lsof_output = (
+      b"COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+      b"beyondcorp-dns 885 root 17u IPv6 0x1 0t0 TCP [::1]:53 (LISTEN)\n"
+      b"beyondcorp-dns 885 root 18u IPv4 0x2 0t0 TCP 127.0.0.1:53 (LISTEN)\n"
+    )
+    completed = subprocess.CompletedProcess(
+      args=[], returncode=0, stdout=lsof_output, stderr=b""
+    )
+    with mock.patch.object(setup, "_sh", return_value=completed) as mock_sh:
+      setup._check_port_available(53)
+    mock_sh.assert_called_once_with("sudo", "lsof", "+c0", "-n", "-P", "-i:53")
+
+  def test_wildcard_or_host_ip_listener_fails(self) -> None:
+    setup = SetupNetwork("en7")
+    for addr in ("*:53", "192.168.1.1:53"):
+      line = f"dnsmasq 900 root 5u IPv4 0x1 0t0 TCP {addr} (LISTEN)\n"
+      lsof_output = line.encode("utf-8")
+      completed = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout=lsof_output, stderr=b""
+      )
+      with (
+        mock.patch.object(setup, "_sh", return_value=completed),
+        self.assertRaises(SystemExit),
+      ):
+        setup._check_port_available(53)
 
 
 if __name__ == "__main__":
