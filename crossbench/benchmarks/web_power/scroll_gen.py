@@ -180,7 +180,7 @@ def generate_swipes(
       multiplier = (1 - math.cos(math.pi * progress)) / 2
       current_y_pos = start_y + (end_y - start_y) * multiplier
       generate_event(
-        time, fixed_x, int(current_y_pos), finger_down=True, out=out
+        time, fixed_x, round(current_y_pos), finger_down=True, out=out
       )
       time += period
 
