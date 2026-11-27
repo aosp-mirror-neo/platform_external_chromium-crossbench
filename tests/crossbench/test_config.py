@@ -740,6 +740,15 @@ class ConfigObjectTestCase(CrossbenchFakeFsTestCase):
     assert isinstance(config, CustomConfigObject)
     self.assertEqual(config.name, "foo")
 
+  def test_parse_dict_name_and_alias(self):
+    with self.assertRaises(argparse.ArgumentTypeError) as cm:
+      CustomConfigObject.parse({"name": "foo", "name_alias": "foo"})
+    self.assertIn(
+      "CustomConfigObject: Got conflicting argument, "
+      "'name' and 'name_alias' cannot be specified together.",
+      str(cm.exception),
+    )
+
   def test_parse_dict_custom_value_enum(self):
     config = CustomConfigObject.parse({"name_alias": "foo"})
     assert isinstance(config, CustomConfigObject)

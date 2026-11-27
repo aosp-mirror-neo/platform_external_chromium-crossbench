@@ -406,9 +406,9 @@ class ConfigArgParser:
     for alias in self.aliases:
       if alias in config_data:
         raise ValueError(
-          f"{self.cls_name}: ",
+          f"{self.cls_name}: "
           f"Got conflicting argument, '{self.name}' and '{alias}' "
-          "cannot be specified together.",
+          "cannot be specified together."
         )
 
   def _validate_type_without_depending_kwargs(
