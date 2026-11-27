@@ -13,6 +13,10 @@ import google.protobuf.text_format as proto_text_format
 
 from crossbench import path as pth
 from crossbench.parse import NumberParser, ObjectParser
+from crossbench.probes.cb_perfetto.chrome_triggers import (
+  apply_triggers_to_trace_config,
+  record_triggered_anomalies,
+)
 from crossbench.probes.cb_perfetto.constants import (
   PERFETTO_CONFIG_NAME,
   PERFETTO_TRACE_NAME,
@@ -28,6 +32,7 @@ if TYPE_CHECKING:
   from crossbench.plt.types import TupleCmdArgs
   from crossbench.probes.cb_perfetto.perfetto import PerfettoProbe
   from crossbench.runner.run import Run
+  from third_party.protoc import trace_config_pb2
 
 PERFETTO_STOP_TIMEOUT: Final[dt.timedelta] = dt.timedelta(seconds=30)
 
@@ -45,9 +50,22 @@ class PerfettoProbeContext(
     )
     self._perfetto_pid: int | None = None
     self._snapshots: Final[list[pth.LocalPath]] = []
+    self._active_trace_config: trace_config_pb2.TraceConfig = probe.trace_config
+    self._trigger_salt: str = ""
+    self._final_clone_path: pth.AnyPath | None = None
+    self._remote_trigger_snapshots: Final[list[pth.AnyPath]] = []
 
   def setup(self) -> None:
     assert self._perfetto_pid is None
+    if self.probe.chrome_triggers:
+      session_ctx = self.probe.get_or_create_session_context(self.session)
+      session_ctx.setup()
+      self._trigger_salt = session_ctx.salt
+      self._active_trace_config = apply_triggers_to_trace_config(
+        self.probe.trace_config,
+        self.probe.chrome_triggers,
+        self._trigger_salt,
+      )
     for p in self.browser_platform.processes():
       if p["name"] == "perfetto":
         logging.warning("PERFETTO: killing existing session pid: %s", p["pid"])
@@ -65,7 +83,7 @@ class PerfettoProbeContext(
   def _setup_push_perfetto_config(self) -> None:
     self.host_platform.write_text(
       self._host_config_file,
-      proto_text_format.MessageToString(self.probe.trace_config),
+      proto_text_format.MessageToString(self._active_trace_config),
     )
     if not self.probe.config_via_stdin:
       self.browser_platform.push(
@@ -148,7 +166,7 @@ class PerfettoProbeContext(
 
   def _clone(self, out_path: pth.AnyPath) -> None:
     clone_args: TupleCmdArgs
-    if session_name := self.probe.trace_config.unique_session_name:
+    if session_name := self._active_trace_config.unique_session_name:
       clone_args = ("--clone-by-name", session_name)
     else:
       clone_args = ("--clone", "-1")
@@ -178,6 +196,13 @@ class PerfettoProbeContext(
     logging.info("PERFETTO: stopping")
     if not self._perfetto_pid:
       raise RuntimeError("Perfetto was not started")
+    if self.probe.chrome_triggers:
+      # traced skips ReadBuffers() on the main session when CLONE_SNAPSHOT is
+      # active, so clone the live ring buffer before terminating perfetto.
+      self._final_clone_path = self.result_path.with_name(
+        f"{self.result_path.name}.final"
+      )
+      self._clone(self._final_clone_path)
     self._stop_perfetto()
 
   def _try_start_perfetto(self) -> None:
@@ -242,23 +267,80 @@ class PerfettoProbeContext(
         self._cleanup_remote_perfetto_files()
 
   def _transfer_results(self) -> ProbeResult:
-    browser_result = self.browser_result(file=[self.result_path])
+    source_path: pth.AnyPath
+    if self._final_clone_path:
+      source_path = self._final_clone_path
+      if not self.browser_platform.is_remote:
+        self.host_platform.rm(
+          self.host_platform.local_path(self.result_path),
+          missing_ok=True,
+        )
+    else:
+      source_path = self.result_path
+    browser_result = self.browser_result(file=[source_path])
     local_result_file = browser_result.file
     assert local_result_file.is_file(), (
       f"Could not copy perfetto results: {local_result_file}"
     )
     renamed_result_file = local_result_file.with_name(PERFETTO_TRACE_NAME)
-    self.host_platform.rename(local_result_file, renamed_result_file)
+    if local_result_file != renamed_result_file:
+      self.host_platform.rename(local_result_file, renamed_result_file)
 
     compressed_result_file = self._compress_trace_file(renamed_result_file)
     logging.info("Perfetto trace compressed: %s", compressed_result_file)
+
+    if self.probe.chrome_triggers:
+      self._collect_triggered_snapshots()
 
     return LocalProbeResult(
       perfetto=(compressed_result_file,),
       file=tuple(self._snapshots),
     )
 
+  def _pull_triggered_snapshots(self) -> list[pth.LocalPath]:
+    raw_snapshots: list[pth.LocalPath] = []
+    idx = 0
+    while True:
+      remote_snap = self.result_path.with_name(f"{self.result_path.name}.{idx}")
+      if not self.browser_platform.is_file(remote_snap):
+        break
+      if self.browser_platform.is_remote:
+        self._remote_trigger_snapshots.append(remote_snap)
+        local_raw = self.run.out_dir / f"_triggered_snapshot_{idx:03d}.trace.pb"
+        self.browser_platform.pull(remote_snap, local_raw)
+      else:
+        local_raw = self.host_platform.local_path(remote_snap)
+      raw_snapshots.append(local_raw)
+      idx += 1
+    return raw_snapshots
+
+  def _collect_triggered_snapshots(self) -> None:
+    raw_snapshots = self._pull_triggered_snapshots()
+    if not raw_snapshots:
+      return
+    labels = record_triggered_anomalies(
+      self.run,
+      raw_snapshots,
+      self.probe.chrome_triggers,
+      self._trigger_salt,
+    )
+    for local_raw, label in zip(raw_snapshots, labels, strict=True):
+      snap_name = (
+        f"perfetto_snapshot_{len(self._snapshots):03d}_{label}.trace.pb"
+      )
+      final_uncompressed = self.run.out_dir / snap_name
+      self.host_platform.rename(local_raw, final_uncompressed)
+      try:
+        self._snapshots.append(self._compress_trace_file(final_uncompressed))
+      except Exception:
+        self.host_platform.rm(final_uncompressed, missing_ok=True)
+        raise
+
   def _cleanup_remote_perfetto_files(self) -> None:
     # Especially on android, the perfetto files are not in the default tmp dir.
     self.browser_platform.rm(self.result_path, missing_ok=True)
     self.browser_platform.rm(self.get_browser_config_path(), missing_ok=True)
+    if self._final_clone_path:
+      self.browser_platform.rm(self._final_clone_path, missing_ok=True)
+    for snap_path in self._remote_trigger_snapshots:
+      self.browser_platform.rm(snap_path, missing_ok=True)

@@ -7,6 +7,7 @@ import contextlib
 import datetime as dt
 from typing import (
   TYPE_CHECKING,
+  ClassVar,
   Final,
   Iterable,
   Iterator,
@@ -45,6 +46,8 @@ class BaseProbeContext[ProbeT: Probe](metaclass=abc.ABCMeta):
   - A file / list / dict of result file Paths should be returned by the
     override teardown() method
   """
+
+  PRODUCES_DATA: ClassVar[bool] = True
 
   def __init__(self, probe: ProbeT, result_origin: ResultOrigin) -> None:
     self._probe: Final[ProbeT] = probe

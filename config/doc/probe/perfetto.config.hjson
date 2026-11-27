@@ -1,6 +1,8 @@
 {
   "probes": {
     "perfetto": {
+      // Optional Chrome UMA histogram anomaly triggers (CLONE_SNAPSHOT mode).
+      "chrome_triggers": []
       // texproto can be directly copied from https://ui.perfetto.dev/#!/record?p=instructions
       // under the "recording command' settings.
       "textproto":

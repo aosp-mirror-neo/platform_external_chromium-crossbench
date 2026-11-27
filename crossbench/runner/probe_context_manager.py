@@ -160,7 +160,7 @@ class ProbeContextManager[
         assert probe_context.result_origin == self._origin
         probe_results: ProbeResult = probe_context.teardown()
         probe = probe_context.probe
-        if probe_results.is_empty:
+        if probe_results.is_empty and probe_context.PRODUCES_DATA:
           self._warn_empty_probe_result(probe)
         self._probe_results[probe] = probe_results
 

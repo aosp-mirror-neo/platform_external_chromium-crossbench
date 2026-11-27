@@ -2,8 +2,15 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 import argparse
+import base64
+import datetime as dt
 import logging
+import subprocess
+import sys
+import tempfile
 import unittest
+import urllib.error
+import urllib.parse
 from typing import TYPE_CHECKING, override
 from unittest import mock
 
@@ -12,9 +19,18 @@ from crossbench.browsers.attributes import BrowserAttributes
 from crossbench.browsers.settings import Settings
 from crossbench.cli.config.probe import ProbeConfig
 from crossbench.cli.config.probe_list import ProbeListConfig
+from crossbench.config import ConfigError
+from crossbench.flags.chrome import ChromeFlags
 from crossbench.plt.android_adb import Adb
 from crossbench.plt.arch import MachineArch
 from crossbench.probes.all import PerfettoProbe
+from crossbench.probes.cb_perfetto import chrome_triggers
+from crossbench.probes.cb_perfetto.chrome_triggers import (
+  ChromeTriggerConfig,
+  SnapshotTriggerInfo,
+  apply_triggers_to_trace_config,
+  inspect_triggered_snapshots,
+)
 from crossbench.probes.cb_perfetto.context.android import (
   AndroidPerfettoProbeContext,
 )
@@ -31,6 +47,7 @@ from crossbench.probes.cb_perfetto.context.windows import (
 from crossbench.probes.cb_perfetto.downloader import PerfettoToolDownloader
 from crossbench.probes.cb_perfetto.perfetto import TraceConfig
 from crossbench.probes.probe_error import ProbeIncompatibleBrowser
+from crossbench.runner.anomalies import Anomaly, AnomalySource
 from tests import test_helper
 from tests.crossbench.base import (
   CrossbenchConfigTestMixin,
@@ -47,7 +64,7 @@ from tests.crossbench.mock_helper import (
   WinMockPlatform,
 )
 from tests.crossbench.runner.helper import MockRun
-from third_party.protoc import trace_config_pb2
+from third_party.protoc import scenario_config_pb2, trace_config_pb2
 
 if TYPE_CHECKING:
   from crossbench.plt.base import Platform
@@ -449,7 +466,10 @@ class PerfettoProbeContextTestCase(
     browser_session.root_dir = pth.LocalPath("/tmp/results")
     self.fs.create_dir(browser_session.root_dir)
     run = MockRun(
-      runner=mock.Mock(), browser_session=browser_session, story=mock.Mock()
+      runner=mock.Mock(),
+      browser_session=browser_session,
+      story=mock.Mock(),
+      probe=probe,
     )
     # MockRun calculates out_dir from browser_session.root_dir
     self.fs.create_dir(run.out_dir)
@@ -707,6 +727,466 @@ class PerfettoProbeContextTestCase(
     trace_config = self._unknown_buffer_name_config()
     trace_config.data_sources[0].config.target_buffer_name = "track_event"
     self._validate_browser(trace_config, WinMockPlatform())
+
+  def test_desktop_context_chrome_triggers_records_run_anomalies(self) -> None:
+    trace_config = trace_config_pb2.TraceConfig()
+    trace_config.unique_session_name = "alice_ring_buffer"
+    probe = PerfettoProbe(
+      trace_config=trace_config,
+      chrome_triggers=(
+        ChromeTriggerConfig(
+          name="laggy_input",
+          histogram_name="EventLatency.TotalLatency",
+          min_value=500000,
+          stop_delay=dt.timedelta(seconds=2),
+          max_triggers=5,
+        ),
+      ),
+    )
+    context, platform, tracebox_proc = self._create_desktop_context(probe)
+    run = context.run
+    chrome_flags = ChromeFlags()
+    run.session.extra_flags = chrome_flags
+
+    platform.expect_sh("tracebox", "traced", "traced_probes", result="")
+    context.setup()
+
+    enabled_features = chrome_flags["--enable-features"]
+    assert enabled_features is not None
+    self.assertTrue(enabled_features.startswith("TracingTriggers:config/"))
+
+    written_cfg = TraceConfig.parse_textproto(
+      platform.cat(run.out_dir / "perfetto_config.textproto")
+    ).trace_config
+    self.assertEqual(
+      written_cfg.trigger_config.trigger_mode,
+      trace_config_pb2.TraceConfig.TriggerConfig.CLONE_SNAPSHOT,
+    )
+    self.assertEqual(len(written_cfg.trigger_config.triggers), 1)
+    salted_name = written_cfg.trigger_config.triggers[0].name
+    self.assertTrue(salted_name.startswith("laggy_input__cb_"))
+
+    platform.expect_sh(
+      "tracebox",
+      "perfetto",
+      "--background",
+      "--config",
+      str(run.out_dir / "perfetto_config.textproto"),
+      "--txt",
+      "--out",
+      str(run.out_dir / "perfetto.trace.pb"),
+      result="123",
+    )
+    context.start()
+
+    # Record an independent visual agent anomaly during the story run.
+    run.anomalies.append(
+      Anomaly(
+        timestamp=dt.datetime(2026, 11, 17, 1, 0, 6, tzinfo=dt.UTC),
+        source=AnomalySource.AGENT,
+        description="Visual spinner stuck",
+        perfetto_snapshot_label="episode_000_step_002_anomaly",
+      )
+    )
+
+    # stop() clones the live ring buffer to perfetto.trace.pb.final before
+    # stopping perfetto.
+    final_clone = run.out_dir / "perfetto.trace.pb.final"
+    platform.expect_sh(
+      "tracebox",
+      "perfetto",
+      "--clone-by-name",
+      "alice_ring_buffer",
+      "--out",
+      str(final_clone),
+    )
+    self.fs.create_file(final_clone, contents="main_ring_buffer_bytes")
+    self.fs.create_file(run.out_dir / "perfetto.trace.pb", contents="")
+    context.stop()
+
+    # Simulate two triggered snapshot files (.0 and .1).
+    self.fs.create_file(
+      run.out_dir / "perfetto.trace.pb.0", contents="snap_0_bytes"
+    )
+    self.fs.create_file(
+      run.out_dir / "perfetto.trace.pb.1", contents="snap_1_bytes"
+    )
+
+    main_trace = run.out_dir / "perfetto.trace.pb"
+    snap_0_out = (
+      run.out_dir / "perfetto_snapshot_000_trigger_laggy_input.trace.pb"
+    )
+    snap_1_out = (
+      run.out_dir / "perfetto_snapshot_001_trigger_laggy_input_2.trace.pb"
+    )
+    platform.expect_sh("gzip", str(main_trace))
+    self.fs.create_file(main_trace.with_suffix(".pb.gz"))
+    platform.expect_sh("gzip", str(snap_0_out))
+    self.fs.create_file(snap_0_out.with_suffix(".pb.gz"))
+    platform.expect_sh("gzip", str(snap_1_out))
+    self.fs.create_file(snap_1_out.with_suffix(".pb.gz"))
+
+    rule = probe.chrome_triggers[0]
+    inspected = [
+      SnapshotTriggerInfo(
+        rule=rule,
+        timestamp=dt.datetime(2026, 11, 17, 1, 0, 2, tzinfo=dt.UTC),
+        histogram_value=620000,
+      ),
+      SnapshotTriggerInfo(
+        rule=rule,
+        timestamp=dt.datetime(2026, 11, 17, 1, 0, 3, tzinfo=dt.UTC),
+        histogram_value=750000,
+      ),
+    ]
+    with mock.patch.object(
+      chrome_triggers,
+      "inspect_triggered_snapshots",
+      return_value=inspected,
+    ):
+      result = context.teardown()
+
+    self.assertEqual(tracebox_proc.state, MockPopenState.TERMINATED)
+    self.assertEqual(len(result.perfetto_list), 1)
+    self.assertEqual(
+      [p.name for p in result.file_list],
+      [
+        "perfetto_snapshot_000_trigger_laggy_input.trace.pb.gz",
+        "perfetto_snapshot_001_trigger_laggy_input_2.trace.pb.gz",
+        "perfetto.trace.pb.gz",
+      ],
+    )
+    self.assertFalse(self.fs.exists(run.out_dir / "perfetto.trace.pb.0"))
+    self.assertFalse(self.fs.exists(run.out_dir / "perfetto.trace.pb.1"))
+
+    anomalies_json = run.anomalies.to_json()
+    self.assertEqual(len(anomalies_json), 3)
+    self.assertEqual(
+      [entry["source"] for entry in anomalies_json],
+      ["perfetto_trigger", "perfetto_trigger", "agent"],
+    )
+    self.assertEqual(
+      anomalies_json[0]["perfetto_snapshot_label"], "trigger_laggy_input"
+    )
+    self.assertEqual(
+      anomalies_json[0]["description"],
+      "Perfetto UMA trigger 'laggy_input': "
+      "EventLatency.TotalLatency = 620000 (>= 500000)",
+    )
+    self.assertEqual(
+      anomalies_json[0]["details"],
+      {
+        "trigger_name": "laggy_input",
+        "histogram_name": "EventLatency.TotalLatency",
+        "histogram_value": 620000,
+        "min_value": 500000,
+        "max_value": None,
+      },
+    )
+    self.assertEqual(
+      anomalies_json[1]["perfetto_snapshot_label"], "trigger_laggy_input_2"
+    )
+
+
+class ChromeTriggersConfigTestCase(unittest.TestCase):
+  def test_parse_chrome_trigger_config_and_descriptions(self) -> None:
+    rule = ChromeTriggerConfig.parse_dict(
+      {
+        "name": "laggy_input",
+        "histogram_name": "EventLatency.TotalLatency",
+        "min_value": 500000,
+        "max_triggers": 3,
+      }
+    )
+    self.assertEqual(rule.name, "laggy_input")
+    self.assertEqual(rule.histogram_name, "EventLatency.TotalLatency")
+    self.assertEqual(rule.min_value, 500000)
+    self.assertIsNone(rule.max_value)
+    self.assertEqual(rule.stop_delay, dt.timedelta(seconds=2))
+    self.assertEqual(rule.max_triggers, 3)
+    self.assertEqual(
+      rule.description(),
+      "Perfetto UMA trigger 'laggy_input': "
+      "EventLatency.TotalLatency (>= 500000)",
+    )
+    self.assertEqual(
+      rule.description(642000),
+      "Perfetto UMA trigger 'laggy_input': "
+      "EventLatency.TotalLatency = 642000 (>= 500000)",
+    )
+
+    shorthand = ChromeTriggerConfig.parse("Browser.Tabs.RendererCrash")
+    self.assertEqual(shorthand.name, "Browser.Tabs.RendererCrash")
+    self.assertEqual(shorthand.histogram_name, "Browser.Tabs.RendererCrash")
+    self.assertIsNone(shorthand.min_value)
+    self.assertIsNone(shorthand.max_value)
+    self.assertEqual(shorthand.bounds_summary(), "any sample")
+    self.assertEqual(
+      shorthand.description(),
+      "Perfetto UMA trigger 'Browser.Tabs.RendererCrash': "
+      "Browser.Tabs.RendererCrash (any sample)",
+    )
+
+    exact = ChromeTriggerConfig(
+      name="exact_rule",
+      histogram_name="Foo.Bar",
+      min_value=50,
+      max_value=50,
+      stop_delay=dt.timedelta(milliseconds=0),
+    )
+    self.assertEqual(exact.bounds_summary(), "in [50, 50]")
+    upper_only = ChromeTriggerConfig(
+      name="upper_rule",
+      histogram_name="Foo.LowFps",
+      max_value=15,
+    )
+    self.assertEqual(upper_only.bounds_summary(), "<= 15")
+    self.assertEqual(
+      upper_only.description(),
+      "Perfetto UMA trigger 'upper_rule': Foo.LowFps (<= 15)",
+    )
+
+  def test_chrome_trigger_config_validation_errors(self) -> None:
+    with self.assertRaises(argparse.ArgumentTypeError):
+      ChromeTriggerConfig.parse_str("")
+    with self.assertRaises(argparse.ArgumentTypeError):
+      ChromeTriggerConfig.parse_dict(
+        {"name": "", "histogram_name": "Foo.Bar", "min_value": 1}
+      )
+    with self.assertRaisesRegex(ConfigError, "__cb_"):
+      ChromeTriggerConfig(
+        name="bad__cb_salt", histogram_name="Foo.Bar", min_value=1
+      )
+    with self.assertRaises(argparse.ArgumentTypeError):
+      ChromeTriggerConfig.parse_dict(
+        {"name": "valid_name", "histogram_name": "", "min_value": 1}
+      )
+    with self.assertRaises(ConfigError):
+      ChromeTriggerConfig(
+        name="inverted", histogram_name="Foo.Bar", min_value=50, max_value=10
+      )
+    with self.assertRaises(ConfigError):
+      ChromeTriggerConfig(
+        name="overflow", histogram_name="Foo.Bar", min_value=2**63
+      )
+    with self.assertRaises(argparse.ArgumentTypeError):
+      ChromeTriggerConfig.parse_dict(
+        {
+          "name": "neg_delay",
+          "histogram_name": "Foo.Bar",
+          "min_value": 1,
+          "stop_delay": "-1s",
+        }
+      )
+    with self.assertRaises(argparse.ArgumentTypeError):
+      ChromeTriggerConfig.parse_dict(
+        {
+          "name": "zero_max",
+          "histogram_name": "Foo.Bar",
+          "min_value": 1,
+          "max_triggers": 0,
+        }
+      )
+
+  def test_perfetto_probe_chrome_triggers_validation(self) -> None:
+    with self.assertRaisesRegex(argparse.ArgumentTypeError, "duplicates"):
+      PerfettoProbe.parse_dict(
+        {
+          "chrome_triggers": [
+            {"name": "dup", "histogram_name": "A.B", "min_value": 1},
+            {"name": "dup", "histogram_name": "C.D", "min_value": 2},
+          ]
+        }
+      )
+
+    write_file_cfg = trace_config_pb2.TraceConfig(write_into_file=True)
+    write_file_cfg.buffers.add(size_kb=1024)
+    with self.assertRaisesRegex(argparse.ArgumentTypeError, "write_into_file"):
+      PerfettoProbe(
+        trace_config=write_file_cfg,
+        chrome_triggers=(
+          ChromeTriggerConfig(name="r1", histogram_name="A.B", min_value=1),
+        ),
+      )
+
+    manual_trig_cfg = trace_config_pb2.TraceConfig()
+    manual_trig_cfg.buffers.add(size_kb=1024)
+    manual_trig_cfg.trigger_config.trigger_timeout_ms = 1000
+    with self.assertRaisesRegex(argparse.ArgumentTypeError, "trigger_config"):
+      PerfettoProbe(
+        trace_config=manual_trig_cfg,
+        chrome_triggers=(
+          ChromeTriggerConfig(name="r1", histogram_name="A.B", min_value=1),
+        ),
+      )
+
+    probe = PerfettoProbe(
+      chrome_triggers=(
+        ChromeTriggerConfig(name="r1", histogram_name="A.B", min_value=1),
+      )
+    )
+    for bad_platform in (MacOsMockPlatform(), WinMockPlatform()):
+      mock_browser = mock.Mock()
+      mock_browser.attributes.return_value = BrowserAttributes.CHROMIUM_BASED
+      mock_browser.platform = bad_platform
+      with self.assertRaises(ProbeIncompatibleBrowser):
+        probe.validate_browser(mock.Mock(), mock_browser)
+
+  def test_session_salting_and_feature_encoding_roundtrip(self) -> None:
+    triggers = (
+      ChromeTriggerConfig(
+        name="laggy_input",
+        histogram_name="EventLatency.TotalLatency",
+        min_value=500000,
+        stop_delay=dt.timedelta(milliseconds=1500),
+        max_triggers=4,
+      ),
+      ChromeTriggerConfig(
+        name="dropped_frames",
+        histogram_name="Graphics.Smoothness.PercentDroppedFrames4.AllSequences",
+        min_value=50,
+        max_value=100,
+      ),
+    )
+    base_cfg = trace_config_pb2.TraceConfig(duration_ms=10000)
+    base_cfg.buffers.add(
+      size_kb=2048,
+      fill_policy=trace_config_pb2.TraceConfig.BufferConfig.DISCARD,
+    )
+    probe = PerfettoProbe(trace_config=base_cfg, chrome_triggers=triggers)
+    self.assertIn("tracing.background", probe.enabled_categories)
+
+    session_a = mock.Mock(extra_flags=ChromeFlags())
+    session_b = mock.Mock(extra_flags=ChromeFlags())
+    session_ctx_a1 = probe.create_session_context(session_a)
+    session_ctx_a2 = probe.get_or_create_session_context(session_a)
+    session_ctx_b = probe.create_session_context(session_b)
+    assert session_ctx_a1 is not None
+    assert session_ctx_b is not None
+    session_ctx_a1.setup()
+    session_ctx_a2.setup()
+    session_ctx_b.setup()
+
+    self.assertIs(session_ctx_a1, session_ctx_a2)
+    self.assertEqual(session_ctx_a1.salt, session_ctx_a2.salt)
+    self.assertNotEqual(session_ctx_a1.salt, session_ctx_b.salt)
+
+    feature_str = session_a.extra_flags["--enable-features"]
+    assert feature_str is not None
+    self.assertTrue(feature_str.startswith("TracingTriggers:config/"))
+    escaped_b64 = feature_str.split(":config/", 1)[1]
+    for unsafe_char in ("/", "+", "=", ",", ":", "<"):
+      self.assertNotIn(unsafe_char, escaped_b64)
+
+    raw_proto = base64.b64decode(urllib.parse.unquote(escaped_b64))
+    parsed_rules = scenario_config_pb2.TracingTriggerRulesConfig()
+    parsed_rules.ParseFromString(raw_proto)
+    self.assertEqual(len(parsed_rules.rules), 2)
+    self.assertEqual(
+      parsed_rules.rules[0].name, f"laggy_input__cb_{session_ctx_a1.salt}"
+    )
+    self.assertEqual(
+      parsed_rules.rules[0].histogram.histogram_name,
+      "EventLatency.TotalLatency",
+    )
+    self.assertEqual(parsed_rules.rules[0].histogram.min_value, 500000)
+    self.assertFalse(parsed_rules.rules[0].histogram.HasField("max_value"))
+    self.assertEqual(parsed_rules.rules[1].histogram.min_value, 50)
+    self.assertEqual(parsed_rules.rules[1].histogram.max_value, 100)
+
+    merged_cfg = apply_triggers_to_trace_config(
+      probe.trace_config, probe.chrome_triggers, session_ctx_a1.salt
+    )
+    self.assertFalse(merged_cfg.HasField("duration_ms"))
+    self.assertEqual(
+      merged_cfg.unique_session_name, f"cb_perfetto_{session_ctx_a1.salt}"
+    )
+    self.assertEqual(
+      merged_cfg.buffers[0].fill_policy,
+      trace_config_pb2.TraceConfig.BufferConfig.RING_BUFFER,
+    )
+    self.assertEqual(
+      merged_cfg.trigger_config.trigger_mode,
+      trace_config_pb2.TraceConfig.TriggerConfig.CLONE_SNAPSHOT,
+    )
+    self.assertEqual(
+      merged_cfg.trigger_config.trigger_timeout_ms, 24 * 60 * 60 * 1000
+    )
+    self.assertEqual(merged_cfg.trigger_config.triggers[0].stop_delay_ms, 1500)
+    self.assertEqual(merged_cfg.trigger_config.triggers[0].max_per_24_h, 4)
+    te_cats = merged_cfg.data_sources[
+      0
+    ].config.track_event_config.enabled_categories
+    self.assertIn("tracing.background", te_cats)
+
+  def test_query_snapshot_trigger_info_real_trace_processor(self) -> None:
+    # Build the binary Perfetto Trace in a subprocess so perfetto_trace_pb2 does
+    # not collide with third_party.protoc in the global protobuf DescriptorPool.
+    trace_bytes = subprocess.check_output(
+      [
+        sys.executable,
+        "-c",
+        (
+          "import hashlib, struct, sys\n"
+          "from perfetto.protos.perfetto.trace import perfetto_trace_pb2\n"
+          "u64 = struct.unpack('>Q', hashlib.md5(\n"
+          "  b'EventLatency.TotalLatency').digest()[:8])[0]\n"
+          "trace = perfetto_trace_pb2.Trace()\n"
+          "pkt_clk = trace.packet.add()\n"
+          "c1 = pkt_clk.clock_snapshot.clocks.add()\n"
+          "c1.clock_id = 6; c1.timestamp = 10_000_000_000\n"
+          "c2 = pkt_clk.clock_snapshot.clocks.add()\n"
+          "c2.clock_id = 1; c2.timestamp = 1_760_000_000_000_000_000\n"
+          "pkt_hist = trace.packet.add()\n"
+          "pkt_hist.timestamp = 11_999_000_000\n"
+          "pkt_hist.trusted_packet_sequence_id = 1\n"
+          "pkt_hist.track_event.type = "
+          "perfetto_trace_pb2.TrackEvent.TYPE_INSTANT\n"
+          "pkt_hist.track_event.track_uuid = 42\n"
+          "pkt_hist.track_event.name = 'HistogramSampleTrigger'\n"
+          "pkt_hist.track_event.chrome_histogram_sample.name_hash = u64\n"
+          "pkt_hist.track_event.chrome_histogram_sample.sample = 642000\n"
+          "pkt_trig = trace.packet.add()\n"
+          "pkt_trig.timestamp = 12_000_000_000\n"
+          "pkt_trig.clone_snapshot_trigger.trigger_name = "
+          "'laggy_input__cb_deadbeef'\n"
+          "pkt_trig.clone_snapshot_trigger.producer_name = 'org.chromium'\n"
+          "pkt_trig.clone_snapshot_trigger.trusted_producer_uid = 1000\n"
+          "pkt_after = trace.packet.add()\n"
+          "pkt_after.timestamp = 12_500_000_000\n"
+          "pkt_after.trusted_packet_sequence_id = 1\n"
+          "pkt_after.track_event.type = "
+          "perfetto_trace_pb2.TrackEvent.TYPE_INSTANT\n"
+          "pkt_after.track_event.track_uuid = 42\n"
+          "pkt_after.track_event.name = 'HistogramSampleTrigger'\n"
+          "pkt_after.track_event.chrome_histogram_sample.name_hash = u64\n"
+          "pkt_after.track_event.chrome_histogram_sample.sample = 999999\n"
+          "sys.stdout.buffer.write(trace.SerializeToString())\n"
+        ),
+      ]
+    )
+    rule = ChromeTriggerConfig(
+      name="laggy_input",
+      histogram_name="EventLatency.TotalLatency",
+      min_value=500000,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      snap_path = pth.LocalPath(tmp_dir) / "perfetto.trace.pb.0"
+      snap_path.write_bytes(trace_bytes)
+      try:
+        infos = inspect_triggered_snapshots([snap_path], (rule,), "deadbeef")
+      except (OSError, urllib.error.URLError) as e:
+        self.skipTest(f"trace_processor binary unavailable offline: {e}")
+
+    self.assertEqual(len(infos), 1)
+    info = infos[0]
+    self.assertEqual(info.rule, rule)
+    self.assertEqual(
+      info.timestamp,
+      dt.datetime(2025, 10, 9, 8, 53, 22, tzinfo=dt.UTC),
+    )
+    self.assertEqual(info.histogram_value, 642000)
 
 
 if __name__ == "__main__":

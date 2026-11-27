@@ -5,6 +5,7 @@
 import argparse
 import dataclasses
 import logging
+import weakref
 from typing import TYPE_CHECKING, ClassVar, Final, Iterable, Self, override
 
 from google.protobuf import json_format
@@ -16,6 +17,11 @@ from crossbench.config import ConfigObject, config_dir
 from crossbench.helper import fs_helper
 from crossbench.helper.collection_helper import close_matches_message
 from crossbench.parse import PROTOBUF_ALL_SUFFIX, ObjectParser, PathParser
+from crossbench.probes.cb_perfetto.chrome_triggers import (
+  TRACING_BACKGROUND_CATEGORY,
+  ChromeTriggerConfig,
+  PerfettoTriggerSessionContext,
+)
 from crossbench.probes.cb_perfetto.context.android import (
   AndroidPerfettoProbeContext,
 )
@@ -43,6 +49,7 @@ if TYPE_CHECKING:
   from crossbench.env.runner_env import RunnerEnv
   from crossbench.probes.cb_perfetto.context.base import PerfettoProbeContext
   from crossbench.runner.groups.browsers import BrowsersRunGroup
+  from crossbench.runner.groups.session import BrowserSessionRunGroup
   from crossbench.runner.run import Run
   from crossbench.runner.runner import Runner
 
@@ -269,6 +276,17 @@ class PerfettoProbe(Probe):
       default=False,
       help="Pass perfetto tracing config via stdin.",
     )
+    parser.add_argument(
+      "chrome_triggers",
+      aliases=("triggers",),
+      type=ChromeTriggerConfig,
+      is_list=True,
+      default=(),
+      help=(
+        "Chrome UMA histogram anomaly triggers that capture CLONE_SNAPSHOT "
+        "traces and record entries in cb.anomalies.json on teardown."
+      ),
+    )
     return parser
 
   @classmethod
@@ -310,6 +328,7 @@ class PerfettoProbe(Probe):
     trace_browser_startup: bool = False,
     start_tracing_sequence: StartTracingSequence = StartTracingSequence.PROBE_START,
     config_via_stdin: bool = False,
+    chrome_triggers: Iterable[ChromeTriggerConfig] = (),
   ) -> None:
     super().__init__()
     if not trace_config:
@@ -319,7 +338,16 @@ class PerfettoProbe(Probe):
     self._tracebox_bin: Final[pth.AnyPath] = tracebox_bin
     self._enabled_tags: Final[tuple[str, ...]] = tuple(enabled_tags)
     self._disabled_tags: Final[tuple[str, ...]] = tuple(disabled_tags)
-    self._enabled_categories: Final[tuple[str, ...]] = tuple(enabled_categories)
+    self._chrome_triggers: Final[tuple[ChromeTriggerConfig, ...]] = tuple(
+      chrome_triggers
+    )
+    self._session_contexts: Final[
+      weakref.WeakKeyDictionary[object, PerfettoTriggerSessionContext]
+    ] = weakref.WeakKeyDictionary()
+    categories = list(enabled_categories)
+    if self._chrome_triggers and TRACING_BACKGROUND_CATEGORY not in categories:
+      categories.append(TRACING_BACKGROUND_CATEGORY)
+    self._enabled_categories: Final[tuple[str, ...]] = tuple(categories)
     self._disabled_categories: Final[tuple[str, ...]] = tuple(
       disabled_categories
     )
@@ -339,6 +367,22 @@ class PerfettoProbe(Probe):
         "Perfetto trace config cannot be empty."
         "Either specify a trace_configs, tags or categories."
       )
+    if not self._chrome_triggers:
+      return
+    ObjectParser.unique_sequence(
+      [trigger.name for trigger in self._chrome_triggers],
+      "chrome_triggers names",
+    )
+    if self._trace_config_obj.write_into_file:
+      raise argparse.ArgumentTypeError(
+        "Perfetto chrome_triggers uses CLONE_SNAPSHOT ring-buffer mode and "
+        "cannot be combined with 'write_into_file: true'."
+      )
+    if self._trace_config_obj.HasField("trigger_config"):
+      raise argparse.ArgumentTypeError(
+        "Perfetto chrome_triggers cannot be combined with a manual "
+        "'trigger_config' in trace_config."
+      )
 
   @property
   @override
@@ -355,6 +399,7 @@ class PerfettoProbe(Probe):
       ("disabled_tags", self.disabled_tags),
       ("enabled_categories", self.enabled_categories),
       ("disabled_categories", self.disabled_categories),
+      ("chrome_triggers", self.chrome_triggers),
     )
 
   @property
@@ -421,6 +466,10 @@ class PerfettoProbe(Probe):
     return self._config_via_stdin
 
   @property
+  def chrome_triggers(self) -> tuple[ChromeTriggerConfig, ...]:
+    return self._chrome_triggers
+
+  @property
   @override
   def result_path_name(self) -> str:
     return "perfetto.trace.pb"
@@ -429,6 +478,15 @@ class PerfettoProbe(Probe):
   def validate_browser(self, env: RunnerEnv, browser: Browser) -> None:
     super().validate_browser(env, browser)
     self.expect_browser(browser, BrowserAttributes.CHROMIUM_BASED)
+    if self._chrome_triggers and (
+      browser.platform.is_win or browser.platform.is_macos
+    ):
+      raise ProbeIncompatibleBrowser(
+        self,
+        browser,
+        "chrome_triggers requires system perfetto/tracebox "
+        "(Linux, Android, ChromeOS)",
+      )
     if browser.platform.is_win:
       self._validate_windows_trace_config(browser)
 
@@ -487,6 +545,23 @@ class PerfettoProbe(Probe):
         logging.critical(
           "  - %s : %s", result_file, fs_helper.get_file_size(result_file)
         )
+
+  @override
+  def create_session_context(
+    self: Self, session: BrowserSessionRunGroup
+  ) -> PerfettoTriggerSessionContext | None:
+    if not self._chrome_triggers:
+      return None
+    return self.get_or_create_session_context(session)
+
+  def get_or_create_session_context(
+    self, session: BrowserSessionRunGroup
+  ) -> PerfettoTriggerSessionContext:
+    if ctx := self._session_contexts.get(session):
+      return ctx
+    ctx = PerfettoTriggerSessionContext(self, session)
+    self._session_contexts[session] = ctx
+    return ctx
 
   @override
   def create_context(self, run: Run) -> PerfettoProbeContext:
