@@ -24,9 +24,13 @@ from crossbench.benchmarks.web_power.base import (
 )
 from crossbench.benchmarks.web_power.probe import WebPowerProbe
 from crossbench.browsers.attributes import BrowserAttributes
+from crossbench.cli.config.browser import BrowserConfig
+from crossbench.cli.config.driver import DriverConfig
+from crossbench.cli.config.driver_type import BrowserDriverType
 from crossbench.cli.config.network import NetworkConfig, NetworkType
 from crossbench.cli.config.probe_list import ProbeListConfig
 from crossbench.cli.parser import CBArgumentParser
+from crossbench.cli.subcommand.setup_wpr_ethernet import HOST_IP
 from crossbench.device_config import (
   DeviceConfigMap,
   DeviceConfigValueError,
@@ -161,7 +165,7 @@ class WebPowerStoryTestCase(unittest.TestCase):
         self.assertEqual(site_config.archive_md5_hash, b"")
 
   def test_setup_pre_recorded_site_network_sets_expected_md5_hash(self) -> None:
-    args = argparse.Namespace(site="cnn", network_config=None)
+    args = argparse.Namespace(site="cnn", network_config=None, browser=())
     MockWebPowerBenchmark._setup_pre_recorded_site_network(args)
     self.assertIsNotNone(args.network_config)
     self.assertEqual(args.network_config.type, NetworkType.WPR)
@@ -308,6 +312,11 @@ class BaseWebPowerBenchmarkTestCase(BaseBenchmarkTestCase):
       stories.append(story)
     return tuple(stories)
 
+  def create_ios_browser_config(self) -> BrowserConfig:
+    with mock.patch.object(DriverConfig, "validate_ios"):
+      driver = DriverConfig(BrowserDriverType.IOS, device_id="00001111")
+    return BrowserConfig("safari", driver)
+
 
 class WebPowerBenchmarkBaseTestCase(BaseWebPowerBenchmarkTestCase):
   def setUp(self) -> None:
@@ -396,6 +405,20 @@ class WebPowerBenchmarkBaseTestCase(BaseWebPowerBenchmarkTestCase):
     self.assertEqual(
       args.network_config.url, WebPowerStory.SITES["cnn"].archive
     )
+
+  def test_kwargs_from_cli_non_ios_keeps_default_wpr_mode(self) -> None:
+    args = self.parse_args("--site", "cnn")
+    args.browser = [BrowserConfig("chrome")]
+    MockWebPowerBenchmark.kwargs_from_cli(args)
+    self.assertFalse(args.network_config.cross_platform_mode)
+    self.assertIsNone(args.network_config.host)
+
+  def test_kwargs_from_cli_ios_site_enables_cross_platform_wpr(self) -> None:
+    args = self.parse_args("--site", "cnn")
+    args.browser = [self.create_ios_browser_config()]
+    MockWebPowerBenchmark.kwargs_from_cli(args)
+    self.assertTrue(args.network_config.cross_platform_mode)
+    self.assertEqual(args.network_config.host, HOST_IP)
 
   def test_kwargs_from_cli_url_live_default(self) -> None:
     args = self.parse_args("--url", "https://www.google.com")

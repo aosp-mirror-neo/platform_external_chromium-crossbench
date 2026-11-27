@@ -30,6 +30,7 @@ from crossbench.benchmarks.web_power.wpr_helpers import WprBannerDismisser
 from crossbench.cli.config.driver_type import BrowserDriverType
 from crossbench.cli.config.network import NetworkConfig, NetworkType
 from crossbench.cli.parser import CBArgumentParser
+from crossbench.cli.subcommand.setup_wpr_ethernet import HOST_IP
 from crossbench.device_config import RequiredDeviceConfig
 from crossbench.helper.path_finder import WprGoFinder
 from crossbench.network.replay.wpr import WprReplayNetwork
@@ -760,9 +761,18 @@ class WebPowerBenchmarkBase(SubStoryBenchmark):
         "Web Power benchmarks require an explicit, known '--site' "
         f"or '--story' to use a mapped WPR recording. Got: {site}"
       )
+    cross_platform_mode: bool = False
+    host: str | None = None
+
+    if any(b.driver.driver_type.is_ios for b in args.browser):
+      cross_platform_mode = True
+      host = HOST_IP
+
     args.network_config = NetworkConfig(
       type=NetworkType.WPR,
       url=site_config.archive,
       expected_md5_hash=site_config.archive_md5_hash,
       no_archive_certificates=True,
+      cross_platform_mode=cross_platform_mode,
+      host=host,
     )

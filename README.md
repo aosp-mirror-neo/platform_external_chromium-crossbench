@@ -162,6 +162,17 @@ Safari needs some extra steps to work:
   - "Developer" tab: Check "Allow remote automation"
   - "Developer" tab: Optional, if you plan to use the apple-script browser, also check "Allow JavaScript from Apple Events"
 
+### Safari on iOS
+
+* Install Xcode (open it once so device support finishes installing) and enable
+  **Developer Mode** on the iPhone (*Settings > Privacy & Security > Developer
+  Mode*).
+
+* Configure Safari remote automation on the iPhone
+  * Settings > Apps > Safari > Advanced, then Turn on Web Inspector and Remote
+    Automation
+  * Increase Auto-lock time as much as possible in settings
+
 
 ### 🩺 Probes
 Probes define a way to extract arbitrary (performance) numbers from a
@@ -294,6 +305,54 @@ bots. Use `--live`, `--official` or `--url=...` to run against a hosted URL
 instead. Running without the checkout (e.g. `checkout_press_benchmarks = False`
 in your `.gclient` `custom_vars`, or a pip install) is an error unless one of
 these flags is passed.
+
+#### WPR over Ethernet
+
+This is a configuration where WPR runs outside of the test device and
+requests are resolved using ethernet/DHCP/DNS. Also, SSL checks are satisfied
+instead of being skipped. This is used for browsers where there is no convenient
+flag to control the networking, like Safari.
+
+##### Prerequisites
+
+* Obtain accessories required to connect the device to your host via Ethernet.
+  Usually, it's two USBC<->Ethernet adaptors and an Ethernet cable, but your
+  setup may vary.
+
+* Install custom certificates on the device.
+  * Upload `third_party/webpagereplay/ecdsa_cert.pem` file to the device.
+  * On iOS
+    * Files > Select your file. This will show “Profile downloaded. Review the
+      profile in the settings app”.
+    * Then go to Settings > More for your iPhone > Profile downloaded > View
+      Profile > Install > Install
+    * Then go to Settings > General > About > Certificate Trust Settings > Turn
+      on Test CA
+  * On Android (depends on the OEM actually, but typically looks somewhat like
+    this):
+    * Settings > Security and privacy > CA certificate > CA certificate >
+      Install anyway > Select your file
+
+* Open Safari in the Mac and in the iPhone. In the Mac, Develop > Iphone >
+  Connect via network.
+
+  After clicking "Connect Via Network", open the menu again and verify the
+  option is ticked. If it's not, you might need to set up a password on your
+  iPhone and retry.
+
+* Install required packages on the host
+  * E.g. on Mac: `brew install dnsmasq`
+
+##### Starting the Network
+
+* Make sure you only have 1 device connected to the host.
+* Determine the name of the interface the device will be connected to.
+  * If you are using a USBC<->Ethernet adaptor, a simple way to determine the
+    interface name is to disconnect/reconnect the adaptor and run `ifconfig`
+    to see which interface disappears.
+* Run `./cb.py setup_wpr_ethernet --interface <interface>`, it will guide
+  you through the network setup process (requires root on the host). Keep it
+  running in a separate terminal window for the entire benchmark run.
 
 ## 📊 Results and Output Directory Structure
 

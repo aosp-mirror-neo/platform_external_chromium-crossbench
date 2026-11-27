@@ -122,30 +122,62 @@ Android/Pixel builds, or larger on OEM builds with extended brightness scales),
 or pass `--required-device-config-mode=warn` to keep the device's current
 configuration without modifying settings.
 
-### Running on iOS (Scroll Scenario)
+### Running on iOS
 
-The scroll scenario (`web-power-scroll`) can also be run on iOS:
+The idle (`web-power-idle`) and scroll (`web-power-scroll`) scenarios can also
+be run on iOS.
+
+#### Prerequisites
+
+* Follow the [Safari on iOS](../../../README.md#safari-on-ios) instructions.
+* For **scroll (`web-power-scroll`)**: Touch scrolling on iOS requires
+  [WebDriverAgent](https://github.com/appium/WebDriverAgent) (WDA) to simulate
+  physical touch gestures. Crossbench will automatically launch
+  `WebDriverAgentRunner` if its `.xctestrun` bundle has been built in Xcode or
+  with `xcodebuild` (deposited in `~/Library/Developer/Xcode/DerivedData/`),
+  or if
+  `--bin-override wda-xctestrun=/path/to/WebDriverAgentRunner*.xctestrun` is
+  passed. Alternatively, launch `WebDriverAgentRunner` on the device
+  beforehand so it listens on port 8100.
+* For **running with WPR**: Follow the
+  [WPR over Ethernet Prerequisites](../../../README.md#prerequisites)
+  instructions.
+
+#### Running the benchmark
+
+##### Running with WPR
+
+* Follow the
+  [Starting WPR over Ethernet](../../../README.md#starting-the-network)
+  instructions.
+* Run the benchmark:
+
+  ```bash
+  ./cb.py web-power-idle --browser=ios:safari
+  ```
+
+  To collect an Xcode Instruments trace during the run, pass the
+  `xcode_instruments` probe:
+
+  ```bash
+  ./cb.py web-power-idle \
+    --browser=ios:safari \
+    --probe=xcode_instruments:path/to/package.instrpkg
+  ```
+
+##### Running against the live network
+
+To skip WPR and load a live URL directly:
 
 ```bash
-./cb.py web-power-scroll --browser=ios:safari
+./cb.py web-power-idle --browser=ios:safari --url=https://www.cnn.com
 ```
 
 Or target a specific device using its UDID:
 
 ```bash
-./cb.py web-power-scroll --browser=<UDID>:safari
+./cb.py web-power-idle --browser=<UDID>:safari --url=https://www.cnn.com
 ```
-
-**Prerequisite:** Touch scrolling on iOS requires
-[WebDriverAgent](https://github.com/appium/WebDriverAgent) (WDA) to simulate
-physical touch gestures. Crossbench will automatically launch
-`WebDriverAgentRunner` if its `.xctestrun` bundle has been built in Xcode or
-with `xcodebuild` (deposited in `~/Library/Developer/Xcode/DerivedData/`), or if
-`--bin-override wda-xctestrun=/path/to/WebDriverAgentRunner*.xctestrun` is
-passed.
-Alternatively, launch `WebDriverAgentRunner` on the device beforehand so it
-listens on port 8100.
-
 
 ### Results
 
