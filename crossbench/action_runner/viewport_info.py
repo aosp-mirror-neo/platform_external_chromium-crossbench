@@ -62,6 +62,15 @@ class ViewportInfo:
     window_offset_y: int,
     element_rect: DisplayRectangle | None,
   ) -> None:
+    # On Windows, maximized windows include an invisible resize border on all
+    # four sides, reported as a negative window_offset_x / window_offset_y.
+    if window_offset_x < 0:
+      window_outer_width += 2 * window_offset_x
+      window_offset_x = 0
+    if window_offset_y < 0:
+      window_outer_height += 2 * window_offset_y
+      window_offset_y = 0
+
     # When page zoom or mobile viewport scaling is active, the ratio between
     # the outer window width (in DIPs) and the inner webview width (in CSS px)
     # reflects the scaling factor between DIPs and CSS pixels:
@@ -71,6 +80,10 @@ class ViewportInfo:
       if window_inner_width and window_outer_width
       else 1.0
     )
+    # A small width difference (<5%) between outer and inner width is caused by
+    # a classic vertical scrollbar (~15-17 CSS px) rather than browser zoom.
+    if 1.0 < zoom_ratio < 1.05:
+      zoom_ratio = 1.0
 
     if zoom_ratio < 1.0:
       # On mobile viewports (e.g. Android Clank when a page is zoomed out to fit
@@ -112,7 +125,10 @@ class ViewportInfo:
 
     # In windowed/desktop mode, window frames may have side borders.
     # Distribute the excess width equally between left and right borders.
-    if window_outer_width_px > window_inner_width_px:
+    if (
+      window_outer_width < screen_avail_width
+      and window_outer_width_px > window_inner_width_px
+    ):
       window_offset_x_px += round(
         (window_outer_width_px - window_inner_width_px) / 2
       )

@@ -233,6 +233,36 @@ class ViewportInfoTestCase(unittest.TestCase):
       viewport_info.element_rect, DisplayRectangle(Point(9, 312), 28, 21)
     )
 
+  def test_maximized_windows_with_invisible_borders_and_scrollbar(self) -> None:
+    # Simulates a maximized Chrome window on Windows (1920x1200 @ 1.5 DPR) with
+    # 8 DIP invisible resize borders on all sides and a 15 CSS px vertical
+    # scrollbar.
+    viewport_info = ViewportInfo(
+      device_pixel_ratio=1.5,
+      window_outer_width=1296,
+      window_outer_height=768,
+      window_inner_width=1265,
+      window_inner_height=665,
+      screen_width=1280,
+      screen_height=800,
+      screen_avail_width=1280,
+      screen_avail_height=752,
+      window_offset_x=-8,
+      window_offset_y=-8,
+      element_rect=DisplayRectangle(Point(229, 134), 69, 31),
+    )
+
+    self.assertEqual(viewport_info.actual_pixel_ratio, 1.5)
+    self.assertEqual(
+      viewport_info.native_screen, DisplayRectangle(Point(0, 0), 1920, 1200)
+    )
+    self.assertEqual(
+      viewport_info.browser_viewable, DisplayRectangle(Point(0, 130), 1898, 998)
+    )
+    self.assertEqual(
+      viewport_info.element_rect, DisplayRectangle(Point(344, 331), 104, 46)
+    )
+
 
 if __name__ == "__main__":
   test_helper.run_pytest(__file__)
