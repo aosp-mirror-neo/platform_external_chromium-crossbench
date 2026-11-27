@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 import abc
+import contextlib
 import inspect
 from typing import TYPE_CHECKING, override
 from unittest import mock
@@ -450,6 +451,7 @@ class BaseShellProbeValidationTestCase(BaseProbeTestCase):
 
     run = self.mock_run()
     self.assertIsInstance(run.browser, mock.MagicMock)
+    self.probe_run = run
     self.browser = run.browser
     self.browser_platform = self.setup_platform()
     self.browser_platform.use_fs = True
@@ -479,6 +481,13 @@ class BaseShellProbeValidationTestCase(BaseProbeTestCase):
     self.non_exec = getattr(self, f"_{self.prefix}_non_exec")
     self.typo = f"{self.prefix}_exec_typo"
     self.wrong_exec = f"{wrong_prefix}_exec_1"
+
+    # The platform the probe runs its commands on, and exec_1's path there.
+    self.target_platform: MockPlatformMixin = self.browser_platform
+    self.exec_1_path = self._remote_exec_1
+    if self.probe_cls is LocalShellProbe:
+      self.target_platform = self.platform
+      self.exec_1_path = self._local_exec_1
 
   def _verify_validation(self, probe: ShellProbeBase) -> None:
     probe.validate_browser(mock.MagicMock(), self.browser)
@@ -543,6 +552,43 @@ class BaseShellProbeValidationTestCase(BaseProbeTestCase):
     with self.assertRaises(ProbeValidationError) as cm:
       self._verify_validation(probe)
     self.assertIn("not executable or does not exist", str(cm.exception))
+
+  def _verify_start_cmd_execution(
+    self, probe: ShellProbeBase, *expected_cmd: pth.AnyPathLike
+  ) -> None:
+    """Runs the start hook like a run does: from the run's own directory."""
+    self.target_platform.expect_sh(*expected_cmd)
+    context = probe.create_context(self.probe_run)
+    context.setup()
+    run_dir = pth.LocalPath("/results/run_dir")
+    self.fs.create_dir(run_dir)
+    with contextlib.chdir(run_dir):
+      context.start()
+    self.assertSequenceEqual(self.target_platform.sh_results, [])
+
+  def test_execution_runs_validated_executable(self):
+    probe = self.probe_cls(start_cmd=[self.exec_1, "--flag"])
+    self._verify_validation(probe)
+    self._verify_start_cmd_execution(probe, self.exec_1_path, "--flag")
+
+  def test_execution_expands_tilde(self):
+    exec_path = self.target_platform.home() / f"{self.prefix}_exec_tilde"
+    self._create_file(str(exec_path), 0o755)
+    probe = self.probe_cls(start_cmd=[f"~/{self.prefix}_exec_tilde", "--flag"])
+    self._verify_validation(probe)
+    self._verify_start_cmd_execution(probe, exec_path, "--flag")
+
+  def test_execution_anchors_relative_program(self):
+    launch_dir = pth.LocalPath("/launch_dir")
+    exec_path = self._create_file(
+      f"/launch_dir/tools/{self.prefix}_exec_relative", 0o755
+    )
+    probe = self.probe_cls(
+      start_cmd=[f"tools/{self.prefix}_exec_relative", "--flag"]
+    )
+    with contextlib.chdir(launch_dir):
+      self._verify_validation(probe)
+    self._verify_start_cmd_execution(probe, exec_path, "--flag")
 
 
 class LocalShellProbeValidationTestCase(BaseShellProbeValidationTestCase):

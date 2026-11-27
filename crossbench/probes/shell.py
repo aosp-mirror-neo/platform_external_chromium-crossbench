@@ -31,6 +31,13 @@ class ShellProbeBase(Probe):
   """
   Base class for probes executing shell commands at lifecycle hooks.
   Each command is optional, but at least one of them has to be set.
+
+  The program of a command is looked up on the target platform when the probe
+  is validated, and the hooks later run the executable found there. On a
+  local platform, a relative program path is therefore relative to the
+  working directory that Crossbench was invoked in. That is neither the
+  Crossbench checkout, nor the result directory of the run, which is where
+  the hooks are run.
   """
 
   @classmethod
@@ -109,6 +116,8 @@ class ShellProbeBase(Probe):
     )
     if not any(self._cmds.values()):
       raise ValueError(f"{self}: Expected at least one command.")
+    # The executable found for each (platform, program) during validation.
+    self._executables: Final[dict[tuple[plt.Platform, str], pth.AnyPath]] = {}
 
   @abc.abstractmethod
   @override
@@ -181,13 +190,27 @@ class ShellProbeBase(Probe):
     if not cmd:
       return
     program = str(cmd[0])
-    if platform.which(program):
-      return
-    raise ProbeValidationError(
-      self,
-      f"Command '{program}' in {cmd_name} is not executable or "
-      f"does not exist on the target platform '{platform}'.",
-    )
+    executable = platform.which(program)
+    if not executable:
+      raise ProbeValidationError(
+        self,
+        f"Command '{program}' in {cmd_name} is not executable or "
+        f"does not exist on the target platform '{platform}'.",
+      )
+    if platform.is_local:
+      # Hooks run in the result directory of their run.
+      executable = platform.absolute(executable)
+    self._executables[platform, program] = executable
+
+  def resolve_cmd(
+    self, platform: plt.Platform, cmd: TupleCmdArgs
+  ) -> TupleCmdArgs:
+    """Returns the cmd with its program replaced by the executable that was
+    found for it when the probe was validated for the platform."""
+    executable = self._executables.get((platform, str(cmd[0])))
+    if not executable:
+      return cmd
+    return (executable, *cmd[1:])
 
   @override
   def validate_env(self, env: RunnerEnv) -> None:
@@ -233,6 +256,7 @@ class ShellProbeContextBase[ProbeT: ShellProbeBase](ProbeContext[ProbeT]):
   def _maybe_run_cmd(self, name: str, cmd: TupleCmdArgs) -> None:
     if not cmd:
       return
+    cmd = self.probe.resolve_cmd(self.target_platform, cmd)
     stdout_path = self.local_result_path / f"{name}.stdout.txt"
     self.host_platform.touch(stdout_path)
     self._result_files.append(stdout_path)
