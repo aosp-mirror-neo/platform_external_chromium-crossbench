@@ -1789,8 +1789,8 @@ class AndroidAdbPlatform(EvemuPlatformMixin, RemotePosixPlatform):
     return meminfos
 
   _DUMPSYS_SYSTEM_TOTAL_FREE_RE: Final[re.Pattern] = re.compile(
-    rb"Total RAM: (?P<total_ram_kb>[0-9][,0-9]*)K.*"
-    rb"\n Free RAM: [0-9][,0-9]*K \( *"
+    rb"Total RAM: +(?P<total_ram_kb>[0-9][,0-9]*)K.*"
+    rb"\n Free RAM: +[0-9][,0-9]*K \( *"
     rb"(?P<cached_pss_kb>[0-9][,0-9]*)K cached pss \+ +"
     rb"(?P<cached_kernel_kb>[0-9][,0-9]*)K cached kernel \+ +"
     rb"(?P<free_kb>[0-9][,0-9]*)K free\)"
@@ -1802,7 +1802,7 @@ class AndroidAdbPlatform(EvemuPlatformMixin, RemotePosixPlatform):
 
   _DUMPSYS_SYSTEM_DMA_BUF_RE: Final[re.Pattern] = re.compile(
     rb"DMA-BUF: +(?P<dma_buf_kb>[0-9][,0-9]*)K \("
-    rb" +(?P<dma_buf_mapped_kb>[0-9][,0-9]*)K mapped \+"
+    rb" *(?P<dma_buf_mapped_kb>[0-9][,0-9]*)K mapped \+"
     rb" +(?P<dma_buf_unmapped_kb>[0-9][,0-9]*)K unmapped\)",
     re.DOTALL,
   )

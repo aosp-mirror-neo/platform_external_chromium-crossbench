@@ -307,6 +307,15 @@ class IOSPlatform(RemotePlatformMixin, Platform):
   def cpu_cores(self, logical: bool) -> int:
     return 0
 
+  @property
+  @override
+  def system_memory_bytes(self) -> int | None:
+    if self.is_simulator:
+      return self.host_platform.system_memory_bytes
+    # Apple's host tools (devicectl, ideviceinfo, WebDriverAgent) do not expose
+    # physical RAM size for real iOS devices.
+    return None
+
   @override
   def _cpu_freq(self) -> CPUFreqInfo | None:
     return None

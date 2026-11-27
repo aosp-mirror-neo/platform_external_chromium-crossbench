@@ -19,6 +19,7 @@ from typing import Final, override
 from pyfakefs.fake_filesystem import OSType
 
 from crossbench import path as pth
+from crossbench.helper.size import Size
 from crossbench.plt.bin import Binaries
 from crossbench.plt.display_info import DisplayResolution
 from crossbench.plt.ios import (
@@ -416,6 +417,31 @@ class IOsMockPlatformTestCase(BaseIOsMockPlatformTestCase):
     )
     platform_sim = IOSPlatform(self.host_platform, IPHONE_SIMULATOR["udid"])
     self.assertTrue(platform_sim.is_simulator)
+
+  def test_system_memory_bytes(self) -> None:
+    self.expect_startup_devices(
+      devices=DEVICES_SINGLE, simulators=SIMULATORS_SAMPLE
+    )
+    platform_physical = IOSPlatform(self.host_platform, "00001111-11AA22BB33DD")
+    self.assertIsNone(platform_physical.system_memory_bytes)
+    self.assertNotIn("system_memory_bytes", platform_physical.system_details())
+    with self.assertRaises(RuntimeError):
+      platform_physical.total_memory_mb()
+
+    self.expect_startup_devices(
+      devices=DEVICES_SINGLE, simulators=SIMULATORS_SAMPLE
+    )
+    platform_sim = IOSPlatform(self.host_platform, IPHONE_SIMULATOR["udid"])
+    with mock.patch.object(
+      MacOsMockPlatform,
+      "system_memory_bytes",
+      new_callable=mock.PropertyMock,
+      return_value=16 * Size.GiB,
+    ):
+      self.assertEqual(platform_sim.system_memory_bytes, 16 * Size.GiB)
+      self.assertEqual(
+        platform_sim.system_details()["system_memory_bytes"], 16 * Size.GiB
+      )
 
   def test_devicectl_skips_simulated_devices(self):
     devicectl_with_simulators = {

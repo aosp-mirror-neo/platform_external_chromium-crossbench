@@ -407,12 +407,14 @@ class Platform(abc.ABC):
     return CPUFreqInfo(cpu_freq.min, cpu_freq.max, cpu_freq.current)
 
   @property
-  def system_memory_bytes(self) -> int:
+  def system_memory_bytes(self) -> int | None:
     self.assert_is_local()
     return psutil.virtual_memory().total
 
   def total_memory_mb(self) -> int:
-    return self.system_memory_bytes // Size.MiB
+    if (memory_bytes := self.system_memory_bytes) is None:
+      raise RuntimeError(f"System memory size is not available on {self}.")
+    return memory_bytes // Size.MiB
 
   def device_config(self) -> dict[str, DeviceConfigMap]:
     """Returns a hierarchical dictionary of device/host configuration.
@@ -456,6 +458,8 @@ class Platform(abc.ABC):
       "CPU": cast("Json", self.cpu_details()),
       "display": cast("Json", self.display_details()),
     }
+    if (system_memory_bytes := self.system_memory_bytes) is not None:
+      details["system_memory_bytes"] = system_memory_bytes
     if self.is_local:
       # TODO: remove once mypy is replaced by pyrefly
       # https://peps.python.org/pep-0728

@@ -217,7 +217,7 @@ class LinuxPlatform(EvemuPlatformMixin, PosixPlatform):
 
   @property
   @override
-  def system_memory_bytes(self) -> int:
+  def system_memory_bytes(self) -> int | None:
     if self.is_local:
       return super().system_memory_bytes
     output = self.sh_stdout("grep", "MemTotal", "/proc/meminfo")

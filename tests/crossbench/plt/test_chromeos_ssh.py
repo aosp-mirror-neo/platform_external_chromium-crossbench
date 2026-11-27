@@ -11,6 +11,7 @@ from unittest import mock
 from crossbench.action_runner.virtual_device.touchscreen import (
   TouchscreenVirtualDeviceConfig,
 )
+from crossbench.helper.size import Size
 from crossbench.plt.chromeos_ssh import ChromeOsSshPlatform
 from crossbench.plt.display_info import DisplayResolution
 from crossbench.plt.linux import SCRIPTS_DIR
@@ -199,6 +200,10 @@ class ChromeOsSshMockPlatformTestCase(LinuxSshMockPlatformTestCase):
       "cros-health-tool telem --category=display",
       result=json.dumps(display_info),
     )
+    self._expect_sh_ssh(
+      "grep MemTotal /proc/meminfo",
+      result="MemTotal:       8093872 kB\n",
+    )
     self._expect_sh_ssh("which lscpu", result="/bin/lscpu")
     self._expect_sh_ssh("'[' -e /bin/lscpu ']'", result="")
     self._expect_sh_ssh("/bin/lscpu", result="definitely a real cpu")
@@ -233,6 +238,7 @@ CHROMEOS_RELEASE_UNIBUILD=1
     self._expect_sh_ssh("cat /etc/lsb-release", result=lsb_release)
 
     details = self.platform.system_details()
+    self.assertEqual(details["system_memory_bytes"], 8093872 * Size.KiB)
     chromeos = details["ChromeOS"]
     self.assertIsInstance(chromeos, dict)
 

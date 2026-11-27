@@ -22,6 +22,7 @@ from unittest import mock
 
 import crossbench.path as pth
 from crossbench import __version__, plt
+from crossbench.helper.size import Size
 from crossbench.plt.base import DEFAULT_CACHE_DIR, SubprocessError
 from crossbench.plt.display_info import DisplayResolution
 from crossbench.plt.posix import PosixPlatform, RemotePosixPlatform
@@ -90,7 +91,7 @@ class BaseNativePlatformTestCase(unittest.TestCase):
 
   def test_system_memory_bytes(self):
     memory = self.platform.system_memory_bytes
-    self.assertIsInstance(memory, int)
+    assert isinstance(memory, int)
     self.assertGreater(memory, 0)
 
   def test_pathsep(self):
@@ -118,9 +119,9 @@ class BaseNativePlatformTestCase(unittest.TestCase):
     memory_mb = self.platform.total_memory_mb()
     self.assertIsInstance(memory_mb, int)
     self.assertGreater(memory_mb, 0)
-    self.assertEqual(
-      memory_mb, self.platform.system_memory_bytes // (1024 * 1024)
-    )
+    memory_bytes = self.platform.system_memory_bytes
+    assert memory_bytes is not None
+    self.assertEqual(memory_mb, memory_bytes // Size.MiB)
 
   def test_system_details(self):
     self.assertIsNotNone(self.platform.system_details())
@@ -835,6 +836,10 @@ class PosixNativePlatformTestCase(BaseNativePlatformTestCase):
     details = self.platform.system_details()
     self.assertTrue(details)
     self.assertTrue(json.dumps(details))
+    system_memory_bytes = details["system_memory_bytes"]
+    assert isinstance(system_memory_bytes, int)
+    self.assertEqual(system_memory_bytes, self.platform.system_memory_bytes)
+    self.assertGreater(system_memory_bytes, 0)
     if not self.platform.is_remote:
       self.assertIn("crossbench", details)
 

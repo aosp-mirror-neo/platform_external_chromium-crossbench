@@ -47,6 +47,7 @@ from crossbench.action_runner.virtual_device.virtual_device_config import (
 )
 from crossbench.benchmarks.loading.point import Point
 from crossbench.cli.config.secrets import GoogleUsernamePassword
+from crossbench.helper.size import Size
 from crossbench.helper.version import VersionParseError
 from crossbench.helper.wait import WaitRange
 from crossbench.plt.android_adb import (
@@ -145,6 +146,24 @@ Total RAM: 3,486,196K (status moderate)
      ZRAM:   203,732K physical used for 745,216K in swap (4,194,300K total swap)
    Tuning: 256 (large 512), oom 322,560K, restore limit 107,520K (high-end-gfx)
 """
+
+DUMPSYS_MEMINFO_SYSTEM_PADDED_OUTPUT: Final = (
+  b"          0K: EGL mtrack\n"
+  b"          0K: GL mtrack\n"
+  b"          0K: Other mtrack\n\n"
+  b"Total RAM: 2,015,244K (status normal)\n"
+  b" Free RAM:   884,501K (  431,185K cached pss +   253,440K cached kernel"
+  b" +   199,876K free)\n"
+  b"DMA-BUF:         0K (        0K mapped +         0K unmapped)\n"
+  b"DMA-BUF Heaps:         0K\n"
+  b"DMA-BUF Heaps pool:         0K\n"
+  b" Used RAM: 1,250,985K (1,021,049K used pss +   229,936K kernel)\n"
+  b" Lost RAM:   147,151K\n"
+  b"     ZRAM:    90,796K physical used for   365,824K in swap"
+  b" (1,511,428K total swap)\n"
+  b"   Tuning: 192 (large 512), oom   322,560K, restore limit   107,520K"
+  b" (high-end-gfx)\n"
+)
 
 
 class BaseAndroidAdbMockPlatformTestCase(BasePosixMockPlatformTestCase):
@@ -1466,7 +1485,13 @@ class AndroidAdbMockPlatformTest(BaseAndroidAdbMockPlatformTestCase):
     self.expect_sh(
       "dumpsys -T 10000 meminfo", result=DUMPSYS_MEMINFO_SYSTEM_OUTPUT
     )
-    self.assertEqual(self.platform.system_memory_bytes, 7698860 * 1024)
+    self.assertEqual(self.platform.system_memory_bytes, 7698860 * Size.KiB)
+
+  def test_system_memory_bytes_padded_free_ram(self) -> None:
+    self.expect_sh(
+      "dumpsys -T 10000 meminfo", result=DUMPSYS_MEMINFO_SYSTEM_PADDED_OUTPUT
+    )
+    self.assertEqual(self.platform.system_memory_bytes, 2015244 * Size.KiB)
 
   def test_system_memory_bytes_missing(self):
     self.expect_sh("dumpsys -T 10000 meminfo", result=b"")
