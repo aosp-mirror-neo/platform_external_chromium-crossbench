@@ -207,10 +207,11 @@ class ShellProbeBase(Probe):
   ) -> TupleCmdArgs:
     """Returns the cmd with its program replaced by the executable that was
     found for it when the probe was validated for the platform."""
-    executable = self._executables.get((platform, str(cmd[0])))
-    if not executable:
+    if not cmd:
       return cmd
-    return (executable, *cmd[1:])
+    if executable := self._executables.get((platform, str(cmd[0]))):
+      return (executable, *cmd[1:])
+    return cmd
 
   @override
   def validate_env(self, env: RunnerEnv) -> None:

@@ -590,6 +590,11 @@ class BaseShellProbeValidationTestCase(BaseProbeTestCase):
       self._verify_validation(probe)
     self._verify_start_cmd_execution(probe, exec_path, "--flag")
 
+  def test_resolve_cmd_empty(self):
+    probe = self.probe_cls(start_cmd=[self.exec_1, "--flag"])
+    self._verify_validation(probe)
+    self.assertSequenceEqual(probe.resolve_cmd(self.target_platform, ()), ())
+
 
 class LocalShellProbeValidationTestCase(BaseShellProbeValidationTestCase):
   __test__ = True
