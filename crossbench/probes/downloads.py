@@ -11,11 +11,14 @@ import crossbench.path as pth
 from crossbench import exception
 from crossbench.parse import ObjectParser
 from crossbench.probes.probe import Probe, ProbeConfigParser, ProbeContext
+from crossbench.probes.probe_error import ProbeIncompatibleBrowser
 from crossbench.probes.result_location import ResultLocation
 
 if TYPE_CHECKING:
   import datetime as dt
 
+  from crossbench.browsers.browser import Browser
+  from crossbench.env.runner_env import RunnerEnv
   from crossbench.probes.results import ProbeResult
   from crossbench.runner.run import Run
 
@@ -58,6 +61,18 @@ class DownloadsProbe(Probe):
     super().__init__()
     self._clear_downloads: Final[bool] = clear_downloads
     self._save_downloads: Final[bool] = save_downloads
+
+  @override
+  def validate_browser(self, env: RunnerEnv, browser: Browser) -> None:
+    super().validate_browser(env, browser)
+    if browser.platform.is_android or browser.platform.is_chromeos:
+      return
+    raise ProbeIncompatibleBrowser(
+      self,
+      browser,
+      "The downloads probe is only supported on Android and ChromeOS, "
+      "please use --no-probe=downloads.",
+    )
 
   @override
   def create_context(self, run: Run) -> DownloadsProbeContext:
