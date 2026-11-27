@@ -328,6 +328,7 @@ class RemoteWprReplayNetwork(WprReplayNetwork):
       cert_file=cert_file,
       inject_scripts=inject_scripts,
       log_path=log_dir / "network.wpr.log",
+      no_archive_certificates=self._no_archive_certificates,
       platform=self.browser_platform,
       rules_file=rules_file,
     )

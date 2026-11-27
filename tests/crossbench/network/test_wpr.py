@@ -4,15 +4,21 @@
 import argparse
 import base64
 import pathlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 from crossbench import path as pth
 from crossbench.cli.config.network import NetworkConfig, NetworkType
-from crossbench.network.replay.wpr import LocalWprReplayNetwork
+from crossbench.network.replay.wpr import (
+  LocalWprReplayNetwork,
+  RemoteWprReplayNetwork,
+)
 from crossbench.network.traffic_shaping.live import NoTrafficShaper
 from tests import test_helper
 from tests.crossbench.base import BaseCrossbenchTestCase
+
+if TYPE_CHECKING:
+  from crossbench.network.replay.web_page_replay import WprReplayServer
 
 
 class WprReplayNetworkTestCase(BaseCrossbenchTestCase):
@@ -48,6 +54,50 @@ class WprReplayNetworkTestCase(BaseCrossbenchTestCase):
     }
     default_kwargs.update(kwargs)
     return LocalWprReplayNetwork(**default_kwargs)
+
+  def _create_remote_network(self, **kwargs: Any) -> RemoteWprReplayNetwork:
+    default_kwargs: dict[str, Any] = {
+      "archive": self.archive_path,
+      "traffic_shaper": self.traffic_shaper,
+      "browser_platform": self.platform,
+      "persist_server": False,
+      "inject_deterministic_script": False,
+      "no_archive_certificates": False,
+      "response_transformations_file": None,
+      "host": None,
+      "expected_md5_hash": b"",
+    }
+    default_kwargs.update(kwargs)
+    return RemoteWprReplayNetwork(**default_kwargs)
+
+  def _create_remote_server(
+    self, network: RemoteWprReplayNetwork
+  ) -> WprReplayServer:
+    """Returns the WPR server that the network would start on the device.
+
+    The fake file system stands in for the device, so pushing a file there
+    copies it.
+    """
+    wpr_root = pth.LocalPath("/wpr")
+    for name in ("ecdsa_key.pem", "ecdsa_cert.pem"):
+      self.fs.create_file(wpr_root / name)
+    network._tmp_dir = pth.AnyPath("/remote/tmp")
+    with mock.patch(
+      "crossbench.network.replay.wpr.WprGoFinder.local_path",
+      new_callable=mock.PropertyMock,
+      return_value=wpr_root,
+    ):
+      return network._create_server(pth.LocalPath("/logs"))
+
+  def test_remote_server_gets_no_archive_certificates(self):
+    network = self._create_remote_network(no_archive_certificates=True)
+    server = self._create_remote_server(network)
+    self.assertIn("--no_archive_certificates", server.cmd)
+
+  def test_remote_server_uses_archive_certificates_by_default(self):
+    network = self._create_remote_network()
+    server = self._create_remote_server(network)
+    self.assertNotIn("--no_archive_certificates", server.cmd)
 
   def test_validate_chromium_browser(self):
     network = self._create_network()
