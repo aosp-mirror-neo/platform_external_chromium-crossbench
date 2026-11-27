@@ -26,7 +26,7 @@ A story consists of a combination of a scenario and a site (for example,
 
 Power measurement is supported through various means. These include:
 
-- **ODPM (On-Device Power Meter):** Hardware sensors built into many modern
+- **ODPM (On Device Power Monitor):** Hardware sensors built into many modern
   devices (like Pixel phones) that report precise power consumption for various
   system rails (e.g., CPU, GPU, Display).
 - **External Dedicated Hardware:** Hardware like Kibble, paired with matching
@@ -249,6 +249,11 @@ be empty or not exist yet), combining the Bits trace with the device's trace
 on a common timeline. Archives are named `<browser>_<story>_<repetition>.zip`,
 e.g. `android.5B221FDDV0000K.1_0_web-power-idle-cnn_0.zip`. Open an archive
 in [Perfetto UI](https://ui.perfetto.dev).
+
+#### Other Hardware
+
+To use other power-measurement hardware and software, see
+[Using Your Own Power-Measurement Tools with Web Power](custom_power_measurement.md).
 
 #### Uploading Results
 
