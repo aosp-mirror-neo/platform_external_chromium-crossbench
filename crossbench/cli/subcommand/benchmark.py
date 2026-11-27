@@ -219,7 +219,7 @@ class BenchmarkSubcommand(CrossbenchSubcommand):
       type=PathParser.hjson_file_path,
       default=self._benchmark_cls.default_probe_config_path(),
       help=(
-        "Browser configuration.json file. "
+        "Probe configuration.json file. "
         "Use this config file to specify more complex Probe settings. "
         "See config/doc/probe.config.hjson on how to set up a complex "
         "configuration file."
