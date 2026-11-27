@@ -39,6 +39,12 @@ data_sources {
       enabled_categories: "gpu"
       enabled_categories: "blink"
       enabled_categories: "benchmark"
+      enabled_categories: "cc"
+      enabled_categories: "graphics.pipeline"
+      enabled_categories: "input"
+      enabled_categories: "input.scrolling"
+      enabled_categories: "latencyInfo"
+      enabled_categories: "viz"
       enabled_categories: "blink.worker"
       enabled_categories: "blink.user_timing"
       enabled_categories: "blink.resource"
@@ -75,6 +81,11 @@ data_sources: {
     config {
         name: "linux.sys_stats"
         target_buffer: 0
+        sys_stats_config {
+            meminfo_period_ms: 1000
+            vmstat_period_ms: 1000
+            stat_period_ms: 1000
+        }
     }
 }
 data_sources: {
