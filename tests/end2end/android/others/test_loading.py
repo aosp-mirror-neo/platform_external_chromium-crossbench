@@ -35,6 +35,19 @@ def _webview_shell_config(device_id: str, adb_path: str) -> str:
   )
 
 
+def _cdp_config(device_id: str, adb_path: str) -> str:
+  return json.dumps(
+    {
+      "browser": "chrome-stable",
+      "driver": {
+        "type": "cdp",
+        "device_id": device_id,
+        "adb_bin": adb_path,
+      },
+    }
+  )
+
+
 class TestAndroidLoading(TestDesktopLoading):
   def test_download(self, browser_config: str, test_env: TestEnv) -> None:
     test_page = urllib.parse.quote("""
@@ -377,6 +390,40 @@ class TestAndroidLoading(TestDesktopLoading):
     assert "com.android.settings/" not in adb.shell_stdout(
       "am", "stack", "list"
     )
+
+  def test_inject_new_document_script_with_cdp_driver(
+    self, device_id: str, adb_path: str, test_env: TestEnv
+  ) -> None:
+    browser_config = _cdp_config(device_id, adb_path)
+    actions: list[dict[str, str]] = [
+      {
+        "action": "inject_new_document_script",
+        "script": "window.injected = 'yes';",
+      },
+    ]
+    # Each new document has to run the injected script before its own
+    # scripts. The page's script runs while the document is parsed, and
+    # records whether the injected one came first.
+    for page in ("first", "second"):
+      test_page = urllib.parse.quote(
+        f"<script>document.title = '{page}:' + window.injected;</script>"
+      )
+      actions += [
+        {
+          "action": "get",
+          "url": f"data:text/html;charset=utf-8,{test_page}",
+          "ready_state": "complete",
+        },
+        {
+          "action": "wait_for_condition",
+          "condition": f"return document.title === '{page}:yes';",
+          "timeout": "5s",
+        },
+      ]
+    page_config = {"pages": {"NewDocumentScriptTest": {"actions": actions}}}
+
+    self.run_loading_test(browser_config, page_config, test_env)
+    self.assert_run_succeeded(test_env)
 
 
 del TestDesktopLoading

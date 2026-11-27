@@ -4,7 +4,7 @@
 
 import contextlib
 import datetime as dt
-from typing import Any, Iterator
+from typing import Any, Iterator, Mapping
 from unittest import mock
 
 import websocket
@@ -237,6 +237,92 @@ class CdpAndroidBrowserTest(CrossbenchFakeFsTestCase):
     )
     url = self.browser.current_url
     self.assertEqual(url, "https://example.com")
+
+  def _sent_methods(self) -> list[str]:
+    return [cmd["method"] for cmd in self.mock_devtools.commands]
+
+  def _respond_with(self, result: Mapping[str, object]) -> None:
+    # The fake client gives this response to every command from now on.
+    self.mock_devtools.next_response = (True, {"id": 1, "result": result})
+
+  def _add_first_script(self) -> None:
+    self._respond_with({"identifier": "7"})
+    self.browser.run_script_on_new_document("window.injected = 1;")
+
+  def _assert_no_script_to_replace(self) -> None:
+    self.mock_devtools.commands.clear()
+    self.browser.run_script_on_new_document("window.injected = 2;")
+    self.assertEqual(
+      self._sent_methods(),
+      ["Page.enable", "Page.addScriptToEvaluateOnNewDocument"],
+    )
+
+  def _start_browser(self) -> None:
+    self.platform.write_text = mock.Mock()  # type: ignore[method-assign]
+    mock_session = mock.MagicMock(spec=BrowserSessionRunGroup)
+    mock_session.browser = self.browser
+    mock_session.extra_flags = Flags()
+    mock_session.browser_flags = ()
+    with (
+      mock.patch.object(self.browser, "_log_browser_start"),
+      self.browser.network.open(mock_session),
+    ):
+      self.browser.start(mock_session)
+
+  def test_run_script_on_new_document(self) -> None:
+    self._respond_with({"identifier": "7"})
+    self.browser.run_script_on_new_document("window.injected = 1;")
+    self.assertEqual(
+      self._sent_methods(),
+      ["Page.enable", "Page.addScriptToEvaluateOnNewDocument"],
+    )
+    self.assertEqual(
+      self.mock_devtools.commands[-1]["params"],
+      {"source": "window.injected = 1;"},
+    )
+
+  def test_run_script_on_new_document_replaces_previous(self) -> None:
+    self._add_first_script()
+    self.mock_devtools.commands.clear()
+    self.browser.run_script_on_new_document("window.injected = 2;")
+    self.assertEqual(
+      self._sent_methods(),
+      [
+        "Page.removeScriptToEvaluateOnNewDocument",
+        "Page.addScriptToEvaluateOnNewDocument",
+      ],
+    )
+    self.assertEqual(
+      self.mock_devtools.commands[0]["params"], {"identifier": "7"}
+    )
+    self.assertEqual(
+      self.mock_devtools.commands[1]["params"],
+      {"source": "window.injected = 2;"},
+    )
+
+  def test_run_script_on_new_document_in_new_tab(self) -> None:
+    self._add_first_script()
+    self.browser.switch_to_new_tab()
+    # The script of the previous tab is not this tab's to remove.
+    self._assert_no_script_to_replace()
+
+  def test_run_script_on_new_document_in_new_tab_from_show_url(self) -> None:
+    self._add_first_script()
+    self.browser.show_url("https://example.com", target=WindowTarget.NEW_TAB)
+    self._assert_no_script_to_replace()
+
+  def test_run_script_on_new_document_after_restart(self) -> None:
+    self._add_first_script()
+    self._start_browser()
+    # The scripts of the previous browser instance went away with it.
+    self._assert_no_script_to_replace()
+
+  def test_run_script_on_new_document_invalid_identifier(self) -> None:
+    for result in ({}, {"identifier": ""}, {"identifier": 7}):
+      with self.subTest(result=result):
+        self._respond_with(result)
+        with self.assertRaisesRegex(AssertionError, "Invalid id"):
+          self.browser.run_script_on_new_document("window.injected = 1;")
 
   def test_webadb_cdp_bridge(self) -> None:
     mock_webadb = mock.Mock()

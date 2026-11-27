@@ -64,6 +64,9 @@ class CdpAndroidBrowser(ChromiumBased):
     self._previous_command_line_contents: str | None = None
     self._needs_restore_chrome_flags: bool = False
     self._has_started_in_session: bool = False
+    # Identifies the script that runs in each new document of the current
+    # tab. Empty if there is none.
+    self._new_document_script_id: str = ""
 
   @classmethod
   @override
@@ -218,6 +221,7 @@ class CdpAndroidBrowser(ChromiumBased):
       stdout=subprocess.DEVNULL,
     )
     self.platform.start_devtools()
+    self._new_document_script_id = ""
     self._is_running = True
 
   @override
@@ -255,13 +259,39 @@ class CdpAndroidBrowser(ChromiumBased):
       WindowTarget.NEW_WINDOW,
       WindowTarget.BLANK,
     ):
-      self.platform.switch_to_new_tab(url)
+      self._open_new_tab(url)
     else:
       raise RuntimeError(f"Unexpected target: {target}")
 
   @override
   def switch_to_new_tab(self) -> None:
-    self.platform.switch_to_new_tab()
+    self._open_new_tab()
+
+  def _open_new_tab(self, url: str = "about:blank") -> None:
+    self.platform.switch_to_new_tab(url)
+    # New-document scripts belong to the tab that they were added in.
+    self._new_document_script_id = ""
+
+  @override
+  def run_script_on_new_document(self, script: str) -> None:
+    if not self._new_document_script_id:
+      # Chrome only runs these scripts while the Page domain is enabled.
+      self._send_cdp("Page.enable")
+    else:
+      # Like the WebDriver browsers, keep a single script per tab.
+      self._send_cdp(
+        "Page.removeScriptToEvaluateOnNewDocument",
+        {"identifier": self._new_document_script_id},
+      )
+      self._new_document_script_id = ""
+    res = self._send_cdp(
+      "Page.addScriptToEvaluateOnNewDocument", {"source": script}
+    )
+    result = res.get("result")
+    assert isinstance(result, dict), f"Invalid CDP result: {res}"
+    identifier = result.get("identifier")
+    assert isinstance(identifier, str) and identifier, f"Invalid id: {result}"
+    self._new_document_script_id = identifier
 
   @override
   def js(
