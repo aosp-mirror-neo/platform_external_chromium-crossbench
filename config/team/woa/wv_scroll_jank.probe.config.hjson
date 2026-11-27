@@ -1,0 +1,55 @@
+// Perfetto, TraceProcessor, and UMA histogram probes for WebView scroll jank.
+{
+  "probes": {
+    "trace_processor": {
+      "queries": [
+        "wv_scroll_jank"
+      ]
+    }
+    "perfetto": {
+      "textproto": "syshealth_plus_webview"
+      "start_tracing_sequence": "story_run"
+      "config_via_stdin": true
+    }
+    "chrome_histograms": {
+      "baseline": true
+      "metrics": {
+        "Event.ScrollJank.DelayedFramesPercentage4.PerScroll": [
+          "mean"
+          "p90"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage4.FixedWindow": [
+          "mean"
+          "p90"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage4.FixedWindow.MissedVsyncDueToDeceleratingInputFrameDelivery": [
+          "mean"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage4.FixedWindow.MissedVsyncDuringFastScroll": [
+          "mean"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage4.FixedWindow.MissedVsyncAtStartOfFling": [
+          "mean"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage4.FixedWindow.MissedVsyncDuringFling": [
+          "mean"
+        ]
+        "Event.ScrollJank.MissedVsyncsSum4.FixedWindow": [
+          "mean"
+        ]
+        "Event.ScrollJank.MissedVsyncsMax4.FixedWindow": [
+          "mean"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage.PerScroll": [
+          "mean"
+        ]
+        "Event.ScrollJank.DelayedFramesPercentage.FixedWindow": [
+          "mean"
+        ]
+        "Event.Jank.PredictorJankyFramePercentage2": [
+          "mean"
+        ]
+      }
+    }
+  }
+}
