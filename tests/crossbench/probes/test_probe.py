@@ -284,7 +284,7 @@ class ProbeTestCase(CrossbenchConfigTestMixin, CrossbenchFakeFsTestCase):
           self.assertEqual(probe_cls.PRIORITY, ProbePriority.USER)
 
   def _verify_shell_probe_key(self, probe_cls: type[ShellProbeBase]) -> None:
-    probe = probe_cls()
+    probe = probe_cls(stop_cmd=("stop_cmd",))
     cmd_keys = [k for k, _ in probe.key if k.endswith("_cmd")]
 
     base_kwargs = {k: (k,) for k in cmd_keys}
@@ -373,6 +373,49 @@ class ShellProbeExecutionTestCase(BaseProbeTestCase):
     run = self.mock_run()
     self._verify_shell_probe_execution(LocalShellProbe, run, self.platform)
 
+  def _verify_story_cmds_only_execution(
+    self,
+    probe_cls: type[ShellProbeBase],
+    run: MockRun,
+    target_platform: MockPlatformMixin,
+  ) -> None:
+    probe = probe_cls(
+      start_story_run_cmd=["start-story-cmd", "1"],
+      stop_story_run_cmd=["stop-story-cmd", "2"],
+    )
+    target_platform.expect_sh("start-story-cmd", "1")
+    target_platform.expect_sh("stop-story-cmd", "2")
+
+    context = probe.create_context(run)
+    context.setup()
+    context.start()
+    context.start_story_run()
+    context.stop_story_run()
+    context.stop()
+    result = context.teardown()
+
+    # The hooks without a command neither run anything nor leave files.
+    self.assertSequenceEqual(target_platform.sh_results, [])
+    self.assertSequenceEqual(
+      [f.name for f in result.file_list],
+      [
+        "start_story_run.stdout.txt",
+        "start_story_run.stderr.txt",
+        "stop_story_run.stdout.txt",
+        "stop_story_run.stderr.txt",
+      ],
+    )
+
+  def test_browser_shell_probe_story_cmds_only_execution(self):
+    run = self.mock_run()
+    browser_platform = self.setup_platform()
+    run.browser_session.browser.platform = browser_platform
+    self._verify_story_cmds_only_execution(ShellProbe, run, browser_platform)
+
+  def test_local_shell_probe_story_cmds_only_execution(self):
+    run = self.mock_run()
+    self._verify_story_cmds_only_execution(LocalShellProbe, run, self.platform)
+
 
 class BaseShellProbeValidationTestCase(BaseProbeTestCase):
   """The validation logic is mostly equivalent for both local and remote
@@ -444,6 +487,20 @@ class BaseShellProbeValidationTestCase(BaseProbeTestCase):
     probe = self.probe_cls(setup_cmd=[self.exec_1], stop_cmd=[self.exec_2])
     self._verify_validation(probe)
 
+  def test_validation_success_without_stop_cmd(self):
+    probe = self.probe_cls.parse_dict(
+      {"start-story": [self.exec_1], "stop-story": [self.exec_2]}
+    )
+    self.assertSequenceEqual(probe.start_story_run_cmd, (self.exec_1,))
+    self.assertSequenceEqual(probe.stop_story_run_cmd, (self.exec_2,))
+    self.assertSequenceEqual(probe.stop_cmd, ())
+    self._verify_validation(probe)
+
+  def test_validation_no_cmds(self):
+    with self.assertRaises(ValueError) as cm:
+      self.probe_cls.parse_dict({})
+    self.assertIn("at least one command", str(cm.exception))
+
   def test_validation_not_executable(self):
     probe = self.probe_cls(setup_cmd=[self.non_exec], stop_cmd=[self.exec_2])
     with self.assertRaises(ProbeValidationError) as cm:
@@ -463,7 +520,7 @@ class BaseShellProbeValidationTestCase(BaseProbeTestCase):
     self.assertIn("not executable or does not exist", str(cm.exception))
 
   def test_validation_tilde_success(self):
-    probe = self.probe_cls()
+    probe = self.probe_cls(stop_cmd=[self.exec_2])
     target_platform = probe.target_platform(self.browser)
 
     home_dir = target_platform.home()

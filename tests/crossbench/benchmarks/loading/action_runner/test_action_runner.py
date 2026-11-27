@@ -196,7 +196,7 @@ class DefaultActionRunnerTestCase(ActionRunnerTestCase):
     self.mock_run.set_probe_context(self.probe_context)
 
   def test_probe_action_unsupported_probe(self):
-    self.set_up_with_probe(ShellProbe(""))
+    self.set_up_with_probe(ShellProbe(stop_cmd=("stop",)))
     action_block = ActionBlock(actions=(ProbeAction.create(probe="shell"),))
 
     with self.assertRaisesRegex(

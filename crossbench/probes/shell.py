@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 class ShellProbeBase(Probe):
   """
   Base class for probes executing shell commands at lifecycle hooks.
+  Each command is optional, but at least one of them has to be set.
   """
 
   @classmethod
@@ -71,7 +72,6 @@ class ShellProbeBase(Probe):
       "stop_cmd",
       aliases=("stop",),
       type=ObjectParser.sh_cmd,
-      required=True,
       help=(
         "CMD is run right after the workload ended and the browser "
         "is still running."
@@ -107,6 +107,8 @@ class ShellProbeBase(Probe):
     self._teardown_cmd: Final[TupleCmdArgs] = (
       tuple(teardown_cmd) if teardown_cmd else ()
     )
+    if not any(self._cmds.values()):
+      raise ValueError(f"{self}: Expected at least one command.")
 
   @abc.abstractmethod
   @override
@@ -150,6 +152,18 @@ class ShellProbeBase(Probe):
   def teardown_cmd(self) -> TupleCmdArgs:
     return self._teardown_cmd
 
+  @property
+  def _cmds(self) -> dict[str, TupleCmdArgs]:
+    """The command of each lifecycle hook by option name, empty if unset."""
+    return {
+      "setup_cmd": self.setup_cmd,
+      "start_cmd": self.start_cmd,
+      "start_story_run_cmd": self.start_story_run_cmd,
+      "stop_story_run_cmd": self.stop_story_run_cmd,
+      "stop_cmd": self.stop_cmd,
+      "teardown_cmd": self.teardown_cmd,
+    }
+
   @abc.abstractmethod
   def target_platform(self, browser: Browser) -> plt.Platform:
     pass
@@ -158,18 +172,12 @@ class ShellProbeBase(Probe):
   def validate_browser(self, env: RunnerEnv, browser: Browser) -> None:
     super().validate_browser(env, browser)
     target_platform = self.target_platform(browser)
-    for cmd_name in (
-      "setup_cmd",
-      "start_cmd",
-      "start_story_run_cmd",
-      "stop_story_run_cmd",
-      "stop_cmd",
-      "teardown_cmd",
-    ):
-      self._validate_cmd(target_platform, cmd_name)
+    for cmd_name, cmd in self._cmds.items():
+      self._validate_cmd(target_platform, cmd_name, cmd)
 
-  def _validate_cmd(self, platform: plt.Platform, cmd_name: str) -> None:
-    cmd: TupleCmdArgs = getattr(self, cmd_name)
+  def _validate_cmd(
+    self, platform: plt.Platform, cmd_name: str, cmd: TupleCmdArgs
+  ) -> None:
     if not cmd:
       return
     program = str(cmd[0])
