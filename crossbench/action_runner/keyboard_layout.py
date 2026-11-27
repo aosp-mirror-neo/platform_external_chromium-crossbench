@@ -74,6 +74,12 @@ def _build_us_keyboard_layout() -> immutabledict[str, KeyMapping]:
 # Represents a mapping from standard characters to W3C KeyboardEvent.code
 # physical keys. This maps directly to the UI Events KeyboardEvent code values
 # specification: https://www.w3.org/TR/uievents-code/
+#
+# Text actions are converted to physical key presses with this table on every
+# platform, and platforms inject physical key positions (evdev key codes, macOS
+# virtual key codes, Windows scan codes). The host keyboard layout then turns
+# them into characters, so typed text only matches the intended text on hosts
+# using a US keyboard layout.
 US_KEYBOARD_LAYOUT: Final[immutabledict[str, KeyMapping]] = (
   _build_us_keyboard_layout()
 )

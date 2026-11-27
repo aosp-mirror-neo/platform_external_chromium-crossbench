@@ -51,6 +51,7 @@ from crossbench.plt.port_manager import LocalPortManager, PortManager
 from crossbench.plt.process_meminfo import ProcessMeminfo
 from crossbench.plt.pyodide import PyodidePlatform
 from crossbench.plt.win import WinPlatform
+from crossbench.plt.win_input import Input, VirtualScreen, Win32InputApi
 from crossbench.stories.story import Story
 
 if TYPE_CHECKING:
@@ -710,9 +711,28 @@ class PosixMockPlatformMixin(MockPlatformMixin):
     )
 
 
+class MockWin32InputApi(Win32InputApi):
+  """Records native Windows input instead of injecting it."""
+
+  def __init__(self) -> None:
+    self.inputs: Final[list[Input]] = []
+
+  @override
+  def send_input(self, inputs: Sequence[Input]) -> None:
+    self.inputs.extend(inputs)
+
+  @override
+  def virtual_screen(self) -> VirtualScreen:
+    return VirtualScreen(left=0, top=0, width=1920, height=1080)
+
+
 class WinMockPlatformMixin(MockPlatformMixin):
   # TODO: use wrapper fake path to get windows-path formatting by default
   # when running on posix.
+
+  def _create_win32_input_api(self) -> Win32InputApi:
+    # Never load user32.dll or inject live input from unit tests.
+    return MockWin32InputApi()
 
   def path(self, path: pth.AnyPathLike) -> pth.AnyPath:
     return pathlib.PureWindowsPath(os.fspath(path))

@@ -48,8 +48,36 @@ class TestDesktopLoading:
   def get_test_platform(self, browser_config: str) -> plt.Platform:
     return BrowserConfig.parse(browser_config).get_platform()
 
-  def supports_native_input(self, platform: plt.Platform) -> bool:
-    return platform.is_linux or platform.is_android or platform.is_chromeos
+  def supports_native_input(
+    self, platform: plt.Platform, input_source: InputSource
+  ) -> bool:
+    if platform.is_linux or platform.is_android or platform.is_chromeos:
+      return True
+    if platform.is_win:
+      return input_source in (InputSource.KEYBOARD, InputSource.MOUSE)
+    return False
+
+  def focus_text_input_action(
+    self, browser_config: str, input_source: InputSource
+  ) -> dict[str, object]:
+    if input_source != InputSource.KEYBOARD:
+      return {
+        "action": "js",
+        "script": "document.getElementById('input').focus();",
+      }
+    # Native key events go to the foreground window, which a JS focus() call
+    # does not change: click the input first, like the typing CUJs do.
+    self.check_input_source_supported(browser_config, InputSource.MOUSE)
+    return {
+      "action": "click",
+      "source": str(InputSource.MOUSE),
+      "position": {
+        "selector": "textarea[id='input']",
+        "required": True,
+        "wait": True,
+      },
+      "verify": "textarea[id='input']:focus",
+    }
 
   def check_input_source_supported(
     self, browser_config: str, input_source: InputSource
@@ -57,7 +85,7 @@ class TestDesktopLoading:
     if input_source not in DEFAULT_VIRTUAL_DEVICES:
       return
     platform = self.get_test_platform(browser_config)
-    if not self.supports_native_input(platform):
+    if not self.supports_native_input(platform, input_source):
       pytest.skip(
         f"Native input injection ('{input_source}') is not supported on "
         f"{platform}"
@@ -225,6 +253,7 @@ class TestDesktopLoading:
 </html>
 """)
 
+    focus_action = self.focus_text_input_action(browser_config, input_source)
     page_config = {
       "pages": {
         "KeyboardTest": {
@@ -234,10 +263,7 @@ class TestDesktopLoading:
               "url": f"data:text/html;charset=utf-8,{test_page}",
               "ready_state": "complete",
             },
-            {
-              "action": "js",
-              "script": "document.getElementById('input').focus();",
-            },
+            focus_action,
             {
               "action": "wait",
               "duration": "1s",

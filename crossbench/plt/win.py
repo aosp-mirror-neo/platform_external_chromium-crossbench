@@ -8,9 +8,13 @@ import functools
 import logging
 import os
 import shutil
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Iterable, override
 
 if TYPE_CHECKING:
+  from crossbench.action_runner.input_events import InputEvent
+  from crossbench.action_runner.virtual_device.virtual_device_config import (
+    VirtualDeviceConfig,
+  )
   from crossbench.plt.display_info import DisplayResolution
   from crossbench.plt.types import TupleCmdArgs
 
@@ -23,6 +27,11 @@ from crossbench.plt.bin import Binaries
 from crossbench.plt.process_meminfo import ProcessMeminfo
 from crossbench.plt.signals import WinSignals
 from crossbench.plt.version import PlatformVersion
+from crossbench.plt.win_input import (
+  CtypesWin32InputApi,
+  Win32InputApi,
+  WinInputInjector,
+)
 from crossbench.plt.win_screenshot import (
   CtypesWin32ScreenCaptureApi,
   Win32ScreenCaptureApi,
@@ -43,6 +52,11 @@ class WinPlatform(Platform):
     pth.LocalPath(os.path.expandvars("%APPDATA%")),
     pth.LocalPath(os.path.expandvars("%LOCALAPPDATA%")),
   )
+
+  def __init__(self) -> None:
+    super().__init__()
+    # Lazily created on first use, see _input_injector().
+    self._win_input_injector: WinInputInjector | None = None
 
   @property
   def signals(self) -> type[WinSignals]:
@@ -76,6 +90,40 @@ class WinPlatform(Platform):
   def powershell_stdout(self, *args, **kwargs) -> str:
     cmd = ["powershell", "-c", *args]
     return self.sh_stdout(*cmd, **kwargs)
+
+  def _create_win32_input_api(self) -> Win32InputApi:
+    return CtypesWin32InputApi()
+
+  def _input_injector(self) -> WinInputInjector:
+    if self._win_input_injector is None:
+      self.assert_is_local()
+      self._win_input_injector = WinInputInjector(
+        self._create_win32_input_api(),
+        sleep=self.sleep,
+        setup_devices=self.setup_virtual_devices,
+      )
+    return self._win_input_injector
+
+  @override
+  def setup_virtual_devices(
+    self, virtual_devices: tuple[VirtualDeviceConfig, ...]
+  ) -> None:
+    if virtual_devices:
+      self._input_injector().setup_virtual_devices(virtual_devices)
+    super().setup_virtual_devices(virtual_devices)
+
+  @override
+  def teardown_virtual_devices(self) -> None:
+    # Avoid creating the injector (and loading user32) just for teardown.
+    if injector := self._win_input_injector:
+      injector.teardown_virtual_devices()
+    super().teardown_virtual_devices()
+
+  @override
+  def inject_input_events(
+    self, device_name: str, events: Iterable[InputEvent]
+  ) -> None:
+    self._input_injector().inject_input_events(device_name, events)
 
   @functools.cached_property
   @override
