@@ -22,6 +22,7 @@ from crossbench.probes.etm import EtmProbe
 from crossbench.probes.frequency import FrequencyProbe
 from crossbench.probes.google_workspace import GoogleWorkspaceProbe
 from crossbench.probes.helper import INTERNAL_NAME_PREFIX
+from crossbench.probes.internal.anomalies import AnomaliesProbe
 from crossbench.probes.internal.browser.driver_log import BrowserDriverLogProbe
 from crossbench.probes.internal.durations import DurationsProbe
 from crossbench.probes.internal.errors import ErrorsProbe
@@ -81,6 +82,7 @@ NON_CONFIGURABLE_INTERNAL_PROBES: Final[InternalProbeTuple] = (
   ResultsSummaryProbe,
   DurationsProbe,
   ErrorsProbe,
+  AnomaliesProbe,
   LogProbe,
   SystemDetailsProbe,
   CrashdumpProbe,

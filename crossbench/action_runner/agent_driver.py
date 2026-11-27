@@ -28,6 +28,7 @@ from crossbench.benchmarks.loading.point import Point
 from crossbench.cli.ui import ui
 from crossbench.plt.base import SubprocessError
 from crossbench.plt.bin import Binaries
+from crossbench.runner.anomalies import Anomaly, AnomalySource
 from crossbench.runner.probe_context_lookup_error import ProbeContextLookupError
 
 if TYPE_CHECKING:
@@ -83,14 +84,10 @@ class AgentDriver:
     self._replay_path: Final[pth.LocalPath] = (
       self._episode_dir / "replay_actions.hjson"
     )
-    self._anomalies_path: Final[pth.LocalPath] = (
-      self._episode_dir / "anomalies.json"
-    )
     self._timelapse_path: Final[pth.LocalPath] = (
       self._episode_dir / "timelapse.webp"
     )
     self._executed_actions: list[JsonDict] = []
-    self._anomalies: list[JsonDict] = []
     self._display_resolution: Final[tuple[int, int]] = (
       self.browser_platform.display_resolution()
     )
@@ -466,18 +463,19 @@ class AgentDriver:
     if self._clone_perfetto_snapshot(snapshot_name, info_label):
       snapshot_label = snapshot_name
 
-    entry: JsonDict = {
-      "episode_id": self._episode_id,
-      "step": step_idx,
-      "timestamp": dt.datetime.now(dt.UTC).isoformat(),
-      "anomaly": anomaly,
-      "perfetto_snapshot_label": snapshot_label,
-      "recent_actions": self._executed_actions[-10:],
-    }
-    self._anomalies.append(entry)
-    self.host_platform.write_text(
-      self._anomalies_path,
-      json.dumps(self._anomalies, indent=2),
+    self._run.anomalies.append(
+      Anomaly(
+        timestamp=dt.datetime.now(dt.UTC),
+        source=AnomalySource.AGENT,
+        description=anomaly,
+        perfetto_snapshot_label=snapshot_label,
+        info_stack=(*self._info_stack, info_label),
+        details={
+          "episode_id": self._episode_id,
+          "step": step_idx,
+          "recent_actions": list(self._executed_actions[-10:]),
+        },
+      )
     )
 
   def _clone_perfetto_snapshot(self, label: str, info_label: str) -> bool:

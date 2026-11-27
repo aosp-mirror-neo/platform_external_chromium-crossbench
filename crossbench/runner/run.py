@@ -21,6 +21,7 @@ from crossbench.parse import NumberParser
 from crossbench.probes.probe_context import ProbeContext
 from crossbench.probes.results import ProbeResultDict
 from crossbench.runner.actions import Actions
+from crossbench.runner.anomalies import Anomalies
 from crossbench.runner.exception import StopStoryException
 from crossbench.runner.probe_context_manager import ProbeContextManager
 from crossbench.runner.result_origin import ResultOrigin
@@ -133,6 +134,7 @@ class Run(ResultOrigin):
       ProbeRunContextManager(self, self._probe_results)
     )
     self._annotations: Final[set[RunAnnotation]] = set()
+    self._anomalies: Final[Anomalies] = Anomalies()
     self._is_skipped: bool = False
 
   def __str__(self) -> str:
@@ -349,6 +351,10 @@ class Run(ResultOrigin):
   @property
   def annotations(self) -> Iterable[RunAnnotation]:
     return iter(self._annotations)
+
+  @property
+  def anomalies(self) -> Anomalies:
+    return self._anomalies
 
   @property
   def secrets(self) -> Secrets:

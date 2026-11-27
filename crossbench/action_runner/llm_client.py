@@ -107,7 +107,7 @@ class AgentTurnResponse(ConfigObject):
       default="",
       help=(
         "Non-empty description when an anomaly is observed on this turn "
-        "(records an entry in anomalies.json and clones a Perfetto "
+        "(records an entry in cb.anomalies.json and clones a Perfetto "
         "snapshot)."
       ),
     )

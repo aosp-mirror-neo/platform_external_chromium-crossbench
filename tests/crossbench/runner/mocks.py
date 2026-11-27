@@ -17,6 +17,7 @@ from crossbench.probes.probe import Probe
 from crossbench.probes.probe_context import ProbeContext
 from crossbench.probes.results import LocalProbeResult, ProbeResult
 from crossbench.runner.actions import Actions
+from crossbench.runner.anomalies import Anomalies
 from crossbench.runner.pause_controller import ResumeMode
 from crossbench.runner.run import Run
 from crossbench.runner.timing import Timing
@@ -60,6 +61,9 @@ class MockRun(Run):
     # Redefines Run._durations (Final) as a mutable attribute.
     # pyrefly: ignore[bad-override]
     _durations: Durations
+    # Redefines Run._anomalies (Final) on MockRun.
+    # pyrefly: ignore[bad-override]
+    _anomalies: Anomalies
     _browser_tmp_dir: pth.AnyPath
     # Redefines Run._repetition (Final) as a mutable attribute.
     # pyrefly: ignore[bad-override]
@@ -105,6 +109,7 @@ class MockRun(Run):
     self._browser = browser_session.browser
     self._exceptions = Annotator(False)
     self._durations = Durations()
+    self._anomalies = Anomalies()
     self._browser_tmp_dir = pth.AnyPath("/browser_tmp")
     self._repetition = repetition
     self._is_warmup = is_warmup
@@ -206,6 +211,11 @@ class MockRun(Run):
   @property
   def durations(self) -> Durations:
     return self._durations
+
+  @property
+  @override
+  def anomalies(self) -> Anomalies:
+    return self._anomalies
 
   @property
   def browser_tmp_dir(self) -> pth.AnyPath:

@@ -953,16 +953,26 @@ class AgentDriverTestCase(ActionRunnerTestCase):
       driver.execute()
 
     mock_perfetto_ctx.invoke.assert_called_once()
-    anomalies_file = driver.episode_dir / "anomalies.json"
-    self.assertTrue(anomalies_file.is_file())
-    anomalies_data = json.loads(anomalies_file.read_text(encoding="utf-8"))
+    self.assertFalse((driver.episode_dir / "anomalies.json").exists())
+    anomalies_data = self.mock_run.anomalies.to_json()
     self.assertEqual(len(anomalies_data), 1)
-    self.assertEqual(anomalies_data[0]["episode_id"], "episode_000")
-    self.assertEqual(anomalies_data[0]["step"], 2)
-    self.assertEqual(anomalies_data[0]["anomaly"], "Detected UI stall")
+    self.assertEqual(anomalies_data[0]["source"], "agent")
+    self.assertEqual(anomalies_data[0]["description"], "Detected UI stall")
     self.assertEqual(
       anomalies_data[0]["perfetto_snapshot_label"],
       "episode_000_step_002_anomaly",
+    )
+    self.assertEqual(
+      anomalies_data[0]["info_stack"],
+      ["agent_000_step_002_anomaly"],
+    )
+    self.assertEqual(
+      anomalies_data[0]["details"],
+      {
+        "episode_id": "episode_000",
+        "step": 2,
+        "recent_actions": [],
+      },
     )
 
   def test_record_anomaly_clones_snapshot_on_every_anomaly_turn(self) -> None:
@@ -1009,8 +1019,7 @@ class AgentDriverTestCase(ActionRunnerTestCase):
       driver.execute()
 
     self.assertEqual(mock_perfetto_ctx.invoke.call_count, 2)
-    anomalies_file = driver.episode_dir / "anomalies.json"
-    anomalies_data = json.loads(anomalies_file.read_text(encoding="utf-8"))
+    anomalies_data = self.mock_run.anomalies.to_json()
     self.assertEqual(len(anomalies_data), 2)
     self.assertEqual(
       anomalies_data[0]["perfetto_snapshot_label"],
@@ -1052,11 +1061,10 @@ class AgentDriverTestCase(ActionRunnerTestCase):
     )
     driver.execute()
 
-    anomalies_file = driver.episode_dir / "anomalies.json"
-    self.assertTrue(anomalies_file.is_file())
-    anomalies_data = json.loads(anomalies_file.read_text(encoding="utf-8"))
+    self.assertFalse((driver.episode_dir / "anomalies.json").exists())
+    anomalies_data = self.mock_run.anomalies.to_json()
     self.assertEqual(len(anomalies_data), 1)
-    self.assertEqual(anomalies_data[0]["anomaly"], "Stall without perfetto")
+    self.assertEqual(anomalies_data[0]["description"], "Stall without perfetto")
     self.assertIsNone(anomalies_data[0]["perfetto_snapshot_label"])
 
   def _setup_driver_with_screenshot(self, prompt: str) -> AgentDriver:
